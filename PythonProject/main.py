@@ -1,5 +1,3 @@
-from idlelib.query import Query
-
 from fastapi import FastAPI, HTTPException, Path, Query, Body, Depends
 from typing import Optional, List, Dict, Annotated
 from sqlalchemy.orm import Session
@@ -8,6 +6,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from models import Base, User, Post
 from database import engine, session_local
 from schemas import  UserCreate, User as DbUser, PostCreate, PostResponse
+from schemas import UserAuth
+from security import hash_password, verify_password
 
 
 app = FastAPI()
@@ -37,10 +37,65 @@ def get_db():
 
 @app.post("/users", response_model=DbUser)
 async def create_user(user: UserCreate, db: Session = Depends(get_db)) -> DbUser:
-    db_user = User(name=user.name, age=user.age)
+    # Check uniqueness by email/login
+    existing = db.query(User).filter(User.email == user.email).first()
+    if existing is not None:
+        raise HTTPException(status_code=400, detail="Email is already registered")
+
+    hashed = hash_password(user.password)
+
+    db_user = User(name=user.name, age=user.age, email=user.email)
+    # Store hash into password_hash if present, otherwise into password (legacy schema)
+    if hasattr(User, 'password_hash'):
+        setattr(db_user, 'password_hash', hashed)
+    elif hasattr(User, 'password'):
+        setattr(db_user, 'password', hashed)
+    else:
+        raise HTTPException(status_code=500, detail="User model has no password field")
+
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
+    return db_user
+
+
+@app.post("/register", response_model=DbUser)
+async def register(user: UserCreate, db: Session = Depends(get_db)) -> DbUser:
+    existing = db.query(User).filter(User.email == user.email).first()
+    if existing is not None:
+        raise HTTPException(status_code=400, detail="Email is already registered")
+
+    hashed = hash_password(user.password)
+
+    db_user = User(name=user.name, age=user.age, email=user.email)
+    if hasattr(User, 'password_hash'):
+        setattr(db_user, 'password_hash', hashed)
+    elif hasattr(User, 'password'):
+        setattr(db_user, 'password', hashed)
+    else:
+        raise HTTPException(status_code=500, detail="User model has no password field")
+
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+@app.post("/login", response_model=DbUser)
+async def login(auth: UserAuth, db: Session = Depends(get_db)) -> DbUser:
+    db_user = db.query(User).filter(User.email == auth.email).first()
+    if db_user is None:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    # Retrieve stored hash from appropriate field
+    stored_hash = None
+    if hasattr(User, 'password_hash'):
+        stored_hash = getattr(db_user, 'password_hash', None)
+    elif hasattr(User, 'password'):
+        stored_hash = getattr(db_user, 'password', None)
+
+    if not stored_hash or not verify_password(auth.password, stored_hash):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
     return db_user
 
 @app.post("/posts/", response_model=PostResponse)

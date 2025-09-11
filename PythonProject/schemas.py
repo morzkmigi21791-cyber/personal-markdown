@@ -1,13 +1,19 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr, conint, constr
 
 
 class UserBase(BaseModel):
     name: str
-    age: int
+    age: conint(ge=0)
+    email: EmailStr
 
 
 class UserCreate(UserBase):
-    pass
+    password: constr(min_length=6)
+
+
+class UserAuth(BaseModel):
+    email: EmailStr
+    password: constr(min_length=6)
 
 class User(UserBase):
     id: int
