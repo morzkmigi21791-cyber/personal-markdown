@@ -14,6 +14,11 @@ app = FastAPI()
 
 origins = [
     "http://localhost:8080",
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:8080",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
     "http://192.168.1.87:8080",
 ]
 
@@ -45,7 +50,7 @@ async def create_user(user: UserCreate, db: Session = Depends(get_db)) -> DbUser
     hashed = hash_password(user.password)
 
     db_user = User(name=user.name, age=user.age, email=user.email)
-    # Store hash into password_hash if present, otherwise into password (legacy schema)
+
     if hasattr(User, 'password_hash'):
         setattr(db_user, 'password_hash', hashed)
     elif hasattr(User, 'password'):
