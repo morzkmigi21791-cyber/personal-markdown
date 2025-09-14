@@ -1,13 +1,14 @@
-from fastapi import FastAPI, HTTPException, Path, Query, Body, Depends
+from fastapi import FastAPI, HTTPException, Path, Query, Body, Depends, Response, status, Request
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Optional, List, Dict, Annotated
 from sqlalchemy.orm import Session
+from datetime import timedelta
 
 from fastapi.middleware.cors import CORSMiddleware
 from models import Base, User, Post
 from database import engine, session_local
-from schemas import  UserCreate, User as DbUser, PostCreate, PostResponse
-from schemas import UserAuth
-from security import hash_password, verify_password
+from schemas import UserCreate, User as DbUser, PostCreate, PostResponse, UserAuth, Token, TokenData
+from security import hash_password, verify_password, create_access_token, verify_token, encrypt_cookie, decrypt_cookie
 
 
 app = FastAPI()
@@ -38,6 +39,55 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+# Security
+security = HTTPBearer()
+
+
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security), db: Session = Depends(get_db)):
+    """Get current user from JWT token."""
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    
+    token = credentials.credentials
+    payload = verify_token(token)
+    if payload is None:
+        raise credentials_exception
+    
+    email: str = payload.get("sub")
+    if email is None:
+        raise credentials_exception
+    
+    user = db.query(User).filter(User.email == email).first()
+    if user is None:
+        raise credentials_exception
+    
+    return user
+
+
+def get_current_user_optional(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security), db: Session = Depends(get_db)):
+    """Get current user from JWT token (optional)."""
+    if not credentials:
+        return None
+    
+    try:
+        token = credentials.credentials
+        payload = verify_token(token)
+        if payload is None:
+            return None
+        
+        email: str = payload.get("sub")
+        if email is None:
+            return None
+        
+        user = db.query(User).filter(User.email == email).first()
+        return user
+    except:
+        return None
 
 
 @app.post("/users", response_model=DbUser)
@@ -85,8 +135,8 @@ async def register(user: UserCreate, db: Session = Depends(get_db)) -> DbUser:
     db.refresh(db_user)
     return db_user
 
-@app.post("/login", response_model=DbUser)
-async def login(auth: UserAuth, db: Session = Depends(get_db)) -> DbUser:
+@app.post("/login", response_model=Token)
+async def login(auth: UserAuth, response: Response, db: Session = Depends(get_db)) -> Token:
     db_user = db.query(User).filter(User.email == auth.email).first()
     if db_user is None:
         raise HTTPException(status_code=401, detail="Invalid credentials")
@@ -101,10 +151,73 @@ async def login(auth: UserAuth, db: Session = Depends(get_db)) -> DbUser:
     if not stored_hash or not verify_password(auth.password, stored_hash):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    return db_user
+    # Create JWT token
+    access_token_expires = timedelta(minutes=30)
+    access_token = create_access_token(
+        data={"sub": db_user.email}, expires_delta=access_token_expires
+    )
+    
+    # Create encrypted cookie with user data
+    user_data = {
+        "id": db_user.id,
+        "name": db_user.name,
+        "age": db_user.age,
+        "email": db_user.email
+    }
+    import json
+    encrypted_cookie = encrypt_cookie(json.dumps(user_data))
+    
+    # Set encrypted cookie
+    response.set_cookie(
+        key="userData",
+        value=encrypted_cookie,
+        max_age=7 * 24 * 60 * 60,  # 7 days
+        httponly=True,
+        secure=False,  # Set to True in production with HTTPS
+        samesite="lax"
+    )
+    
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
+@app.get("/me", response_model=DbUser)
+async def get_current_user_info(current_user: User = Depends(get_current_user)):
+    """Get current user information."""
+    return current_user
+
+
+@app.post("/logout")
+async def logout(response: Response):
+    """Logout user by clearing the cookie."""
+    response.delete_cookie(key="userData")
+    return {"message": "Successfully logged out"}
+
+
+@app.get("/auth/check", response_model=DbUser)
+async def check_auth(request: Request, db: Session = Depends(get_db)):
+    """Check authentication via encrypted cookie."""
+    user_data_cookie = request.cookies.get("userData")
+    if not user_data_cookie:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    try:
+        decrypted_data = decrypt_cookie(user_data_cookie)
+        if not decrypted_data:
+            raise HTTPException(status_code=401, detail="Invalid cookie")
+        
+        import json
+        user_data = json.loads(decrypted_data)
+        user = db.query(User).filter(User.id == user_data.get("id")).first()
+        if not user:
+            raise HTTPException(status_code=401, detail="User not found")
+        
+        return user
+    except Exception as e:
+        raise HTTPException(status_code=401, detail="Invalid authentication data")
+
 
 @app.post("/posts/", response_model=PostResponse)
-async def create_post(post: PostCreate, db: Session = Depends(get_db)) -> PostResponse:
+async def create_post(post: PostCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> PostResponse:
     db_user = db.query(User).filter(User.id == post.author_id).first()
     if db_user is None:
         raise HTTPException(status_code=404, detail="User not found")
@@ -117,7 +230,7 @@ async def create_post(post: PostCreate, db: Session = Depends(get_db)) -> PostRe
 
 
 @app.get("/posts/", response_model=List[PostResponse])
-async def get_posts(db: Session = Depends(get_db)):
+async def get_posts(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return db.query(Post).all()
 
 @app.get("/users/{name}", response_model=DbUser)
