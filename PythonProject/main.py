@@ -1,8 +1,9 @@
 from fastapi import FastAPI, HTTPException, Path, Query, Body, Depends, Response, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.encoders import jsonable_encoder
 from typing import Optional, List, Dict, Annotated
 from sqlalchemy.orm import Session
-from datetime import timedelta
+from datetime import timedelta, datetime, timezone
 
 from fastapi.middleware.cors import CORSMiddleware
 from models import Base, User, Post
@@ -218,11 +219,14 @@ async def check_auth(request: Request, db: Session = Depends(get_db)):
 
 @app.post("/posts/", response_model=PostResponse)
 async def create_post(post: PostCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> PostResponse:
-    db_user = db.query(User).filter(User.id == post.author_id).first()
-    if db_user is None:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    db_post = Post(title=post.title, body=post.body, author_id=post.author_id)
+    from datetime import datetime, timezone
+    
+    # Создаем пост с явным указанием времени в UTC
+    db_post = Post(
+        content=post.content, 
+        author_id=current_user.id,
+        created_at=datetime.now(timezone.utc)
+    )
     db.add(db_post)
     db.commit()
     db.refresh(db_post)
@@ -232,6 +236,26 @@ async def create_post(post: PostCreate, current_user: User = Depends(get_current
 @app.get("/posts/", response_model=List[PostResponse])
 async def get_posts(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return db.query(Post).all()
+
+
+@app.get("/posts/my", response_model=List[PostResponse])
+async def get_my_posts(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return db.query(Post).filter(Post.author_id == current_user.id).order_by(Post.created_at.desc()).all()
+
+
+@app.delete("/posts/{post_id}")
+async def delete_post(post_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    post = db.query(Post).filter(Post.id == post_id).first()
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+    
+    # Проверяем, что пользователь может удалить только свои посты
+    if post.author_id != current_user.id:
+        raise HTTPException(status_code=403, detail="You can only delete your own posts")
+    
+    db.delete(post)
+    db.commit()
+    return {"message": "Post deleted successfully"}
 
 @app.get("/users/{name}", response_model=DbUser)
 async def post(name: str, db: Session = Depends(get_db)):

@@ -1,5 +1,7 @@
-from pydantic import BaseModel, EmailStr, conint, constr
+from pydantic import BaseModel, EmailStr, conint, constr, Field
 from typing import Optional
+from datetime import datetime
+import json
 
 
 class UserBase(BaseModel):
@@ -33,19 +35,19 @@ class TokenData(BaseModel):
     email: Optional[str] = None
 
 
-class PostBase(BaseModel):
-    title: str
-    body: str
-    author_id: int
+class PostCreate(BaseModel):
+    content: constr(min_length=1, max_length=1000)
 
 
-class PostCreate(PostBase):
-    pass
-
-
-class PostResponse(PostBase):
+class PostResponse(BaseModel):
     id: int
+    content: str
+    author_id: int
+    created_at: datetime
     author: User
 
     class Config:
         orm_mode = True
+        json_encoders = {
+            datetime: lambda v: v.isoformat() if v else None
+        }
