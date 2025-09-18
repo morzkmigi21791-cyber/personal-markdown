@@ -1,8 +1,9 @@
 from argon2 import PasswordHasher, exceptions
 from jose import JWTError, jwt
+from datetime import datetime, timedelta
 import os
-from cryptography.fernet import Fernet
-import base64
+from typing import Optional
+from fastapi import HTTPException, status
 
 ph = PasswordHasher()
 
@@ -11,16 +12,8 @@ SECRET_KEY = os.getenv("SECRET_KEY", "@37!34Hif77+UIfgE22&&1#eee2EC1#$")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-# Cookie encryption settings
-COOKIE_SECRET_KEY = os.getenv("COOKIE_SECRET_KEY", "&193##82jddS2h@ff#hk-+rfb##@2@1")
-# Generate a key from the secret
-key = base64.urlsafe_b64encode(COOKIE_SECRET_KEY.encode()[:32].ljust(32, b'0'))
-fernet = Fernet(key)
-
-
 def hash_password(plain_password: str) -> str:
     return ph.hash(plain_password)
-
 
 def verify_password(plain_password: str, password_hash: str) -> bool:
     try:
@@ -29,3 +22,25 @@ def verify_password(plain_password: str, password_hash: str) -> bool:
         return False
     except Exception:
         return False
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+def verify_token(token: str) -> dict:
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Недействительный токен",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
