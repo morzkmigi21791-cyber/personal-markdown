@@ -2,11 +2,17 @@ from fastapi import FastAPI, HTTPException, Depends, Response, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from datetime import timedelta
+from typing import List
 import re
+import string
+import random
 
 from database import SessionLocal, engine
-from models import Base
-from schemas import UserCreate, UserLogin, UserResponse, Token
+from models import Base, User, Project
+from schemas import (
+    UserCreate, UserLogin, UserResponse, UserProfileUpdate, 
+    ProjectCreate, ProjectResponse, UserWithProjects, UserSearchResult, Token
+)
 from security import hash_password, verify_password, create_access_token, verify_token
 from config import ALLOWED_ORIGINS
 
@@ -78,6 +84,17 @@ def validate_email(email: str) -> bool:
     pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     return re.match(pattern, email) is not None
 
+# Генерация уникального ID
+def generate_unique_id(db: Session) -> str:
+    """Генерирует уникальный ID длиной от 5 до 10 символов (только буквы и цифры)"""
+    while True:
+        length = random.randint(5, 10)
+        unique_id = ''.join(random.choices(string.ascii_letters + string.digits, k=length))
+        
+        # Проверяем, что такой ID не существует
+        if not db.query(User).filter(User.unique_id == unique_id).first():
+            return unique_id
+
 @app.get("/")
 async def root():
     return {"message": "Site of Sites API"}
@@ -104,10 +121,12 @@ async def register(user: UserCreate, db: Session = Depends(get_db)):
     
     # Создаем нового пользователя
     hashed_password = hash_password(user.password)
+    unique_id = generate_unique_id(db)
     db_user = User(
         email=user.email,
         nickname=user.nickname,
-        password_hash=hashed_password
+        password_hash=hashed_password,
+        unique_id=unique_id
     )
     
     db.add(db_user)
@@ -169,6 +188,151 @@ async def get_current_user_info(current_user: UserResponse = Depends(get_current
 async def logout(response: Response):
     response.delete_cookie(key="access_token")
     return {"message": "Успешный выход из системы"}
+
+# Поиск пользователей
+@app.get("/api/users/search", response_model=List[UserSearchResult])
+async def search_users(q: str, db: Session = Depends(get_db)):
+    """Поиск пользователей по имени или уникальному ID"""
+    if len(q) < 2:
+        return []
+    
+    # Поиск по никнейму или уникальному ID
+    users = db.query(User).filter(
+        (User.nickname.ilike(f"%{q}%")) | (User.unique_id.ilike(f"%{q}%"))
+    ).limit(5).all()
+    
+    return users
+
+# Получение профиля пользователя
+@app.get("/api/users/{user_id}", response_model=UserWithProjects)
+async def get_user_profile(user_id: int, db: Session = Depends(get_db)):
+    """Получение профиля пользователя по ID"""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Пользователь не найден"
+        )
+    return user
+
+# Получение профиля пользователя по уникальному ID
+@app.get("/api/users/by-unique-id/{unique_id}", response_model=UserWithProjects)
+async def get_user_profile_by_unique_id(unique_id: str, db: Session = Depends(get_db)):
+    """Получение профиля пользователя по уникальному ID"""
+    user = db.query(User).filter(User.unique_id == unique_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Пользователь не найден"
+        )
+    return user
+
+# Обновление профиля
+@app.put("/api/users/profile", response_model=UserResponse)
+async def update_profile(
+    profile_data: UserProfileUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Обновление профиля текущего пользователя"""
+    
+    # Проверяем, что никнейм не занят другим пользователем
+    if profile_data.nickname and profile_data.nickname != current_user.nickname:
+        existing_user = db.query(User).filter(
+            User.nickname == profile_data.nickname,
+            User.id != current_user.id
+        ).first()
+        if existing_user:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Пользователь с таким никнеймом уже существует"
+            )
+    
+    # Обновляем поля
+    if profile_data.nickname is not None:
+        current_user.nickname = profile_data.nickname
+    if profile_data.description is not None:
+        current_user.description = profile_data.description
+    if profile_data.avatar is not None:
+        current_user.avatar = profile_data.avatar
+    
+    db.commit()
+    db.refresh(current_user)
+    return current_user
+
+# Управление проектами
+@app.post("/api/projects", response_model=ProjectResponse)
+async def create_project(
+    project: ProjectCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Создание нового проекта"""
+    db_project = Project(
+        title=project.title,
+        description=project.description,
+        owner_id=current_user.id
+    )
+    db.add(db_project)
+    db.commit()
+    db.refresh(db_project)
+    return db_project
+
+@app.get("/api/projects", response_model=List[ProjectResponse])
+async def get_user_projects(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Получение проектов текущего пользователя"""
+    projects = db.query(Project).filter(Project.owner_id == current_user.id).all()
+    return projects
+
+@app.put("/api/projects/{project_id}", response_model=ProjectResponse)
+async def update_project(
+    project_id: int,
+    project: ProjectCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Обновление проекта"""
+    db_project = db.query(Project).filter(
+        Project.id == project_id,
+        Project.owner_id == current_user.id
+    ).first()
+    
+    if not db_project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Проект не найден"
+        )
+    
+    db_project.title = project.title
+    db_project.description = project.description
+    db.commit()
+    db.refresh(db_project)
+    return db_project
+
+@app.delete("/api/projects/{project_id}")
+async def delete_project(
+    project_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Удаление проекта"""
+    db_project = db.query(Project).filter(
+        Project.id == project_id,
+        Project.owner_id == current_user.id
+    ).first()
+    
+    if not db_project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Проект не найден"
+        )
+    
+    db.delete(db_project)
+    db.commit()
+    return {"message": "Проект удален"}
 
 if __name__ == "__main__":
     import uvicorn

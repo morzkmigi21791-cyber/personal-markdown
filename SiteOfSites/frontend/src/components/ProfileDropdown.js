@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 
-const ProfileDropdown = ({ user, onLogout }) => {
+const ProfileDropdown = ({ user, onLogout, onProfileClick, onSettingsClick }) => {
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef(null);
 
@@ -22,6 +22,16 @@ const ProfileDropdown = ({ user, onLogout }) => {
     setIsOpen(false);
   };
 
+  const handleProfileClick = () => {
+    onProfileClick();
+    setIsOpen(false);
+  };
+
+  const handleSettingsClick = () => {
+    onSettingsClick();
+    setIsOpen(false);
+  };
+
   const getInitials = (nickname) => {
     return nickname ? nickname.charAt(0).toUpperCase() : 'U';
   };
@@ -38,8 +48,11 @@ const ProfileDropdown = ({ user, onLogout }) => {
       
       {isOpen && (
         <div className="profile-menu">
-          <button className="profile-menu-item" onClick={() => setIsOpen(false)}>
-            Личный кабинет
+          <button className="profile-menu-item" onClick={handleProfileClick}>
+            Мой профиль
+          </button>
+          <button className="profile-menu-item" onClick={handleSettingsClick}>
+            Настройки
           </button>
           <button className="profile-menu-item" onClick={handleLogout}>
             Выйти

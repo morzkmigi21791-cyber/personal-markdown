@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { BrowserRouter as Router, Routes, Route, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import Cookies from 'js-cookie';
 import Header from './components/Header';
@@ -6,16 +7,20 @@ import Welcome from './components/Welcome';
 import LoginModal from './components/LoginModal';
 import RegisterModal from './components/RegisterModal';
 import ProfileDropdown from './components/ProfileDropdown';
+import SearchBar from './components/SearchBar';
+import UserProfilePage from './pages/UserProfilePage';
+import ProfileSettingsPage from './pages/ProfileSettingsPage';
 import './App.css';
 
 // Настройка axios для работы с куки
 axios.defaults.withCredentials = true;
 
-function App() {
+function AppContent() {
   const [user, setUser] = useState(null);
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [showRegisterModal, setShowRegisterModal] = useState(false);
   const [loading, setLoading] = useState(true);
+  const navigate = useNavigate();
 
   // Проверяем аутентификацию при загрузке приложения
   useEffect(() => {
@@ -104,6 +109,24 @@ function App() {
     }
   };
 
+  const handleUserSelect = (selectedUser) => {
+    navigate(`/profile/${selectedUser.unique_id}`);
+  };
+
+  const handleProfileUpdate = (updatedUser) => {
+    setUser(updatedUser);
+  };
+
+  const handleProfileClick = () => {
+    if (user) {
+      navigate(`/profile/${user.unique_id}`);
+    }
+  };
+
+  const handleSettingsClick = () => {
+    navigate('/settings');
+  };
+
   if (loading) {
     return (
       <div className="app">
@@ -119,10 +142,17 @@ function App() {
         onLoginClick={() => setShowLoginModal(true)}
         onRegisterClick={() => setShowRegisterModal(true)}
         onLogout={handleLogout}
+        onProfileClick={handleProfileClick}
+        onSettingsClick={handleSettingsClick}
+        onUserSelect={handleUserSelect}
       />
       
       <main className="main-content">
-        <Welcome />
+        <Routes>
+          <Route path="/" element={<Welcome />} />
+          <Route path="/profile/:uniqueId" element={<UserProfilePage user={user} />} />
+          <Route path="/settings" element={<ProfileSettingsPage user={user} onUpdate={handleProfileUpdate} />} />
+        </Routes>
       </main>
 
       {showLoginModal && (
@@ -147,6 +177,14 @@ function App() {
         />
       )}
     </div>
+  );
+}
+
+function App() {
+  return (
+    <Router>
+      <AppContent />
+    </Router>
   );
 }
 

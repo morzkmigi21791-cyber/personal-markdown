@@ -1,5 +1,5 @@
 from pydantic import BaseModel, validator
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 
 class UserBase(BaseModel):
@@ -44,7 +44,51 @@ class UserLogin(BaseModel):
 
 class UserResponse(UserBase):
     id: int
+    unique_id: str
+    avatar: Optional[str] = None
+    description: Optional[str] = None
     created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class UserProfileUpdate(BaseModel):
+    nickname: Optional[str] = None
+    description: Optional[str] = None
+    avatar: Optional[str] = None
+    
+    @validator('nickname')
+    def validate_nickname(cls, v):
+        if v is not None:
+            if len(v) < 2:
+                raise ValueError('Никнейм должен содержать минимум 2 символа')
+            if len(v) > 20:
+                raise ValueError('Никнейм не должен превышать 20 символов')
+        return v
+
+class ProjectBase(BaseModel):
+    title: str
+    description: Optional[str] = None
+
+class ProjectCreate(ProjectBase):
+    pass
+
+class ProjectResponse(ProjectBase):
+    id: int
+    owner_id: int
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class UserWithProjects(UserResponse):
+    projects: List[ProjectResponse] = []
+
+class UserSearchResult(BaseModel):
+    id: int
+    unique_id: str
+    nickname: str
+    avatar: Optional[str] = None
     
     class Config:
         from_attributes = True
