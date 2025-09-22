@@ -266,3 +266,4 @@ const ProfileManager = ({ user, onUpdate, onClose }) => {
 
 export default ProfileManager;
 
+

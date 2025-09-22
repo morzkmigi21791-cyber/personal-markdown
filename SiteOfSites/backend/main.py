@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, Response, status, Request
+from fastapi import FastAPI, HTTPException, Depends, Response, status, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from datetime import timedelta
@@ -7,11 +7,19 @@ import re
 import string
 import random
 
+from starlette.responses import StreamingResponse
+
+from s3 import minio_client, BUCKET_NAME
+import io
+import os
+from config import ALLOWED_FILE_EXTENSIONS, ALLOWED_MIME_TYPES, MAX_FILE_SIZE
+
+
 from database import SessionLocal, engine
-from models import Base, User, Project
+from models import Base, User, Project, ProjectFile
 from schemas import (
     UserCreate, UserLogin, UserResponse, UserProfileUpdate, 
-    ProjectCreate, ProjectResponse, UserWithProjects, UserSearchResult, Token
+    ProjectCreate, ProjectResponse, ProjectFileResponse, UserWithProjects, UserSearchResult, Token
 )
 from security import hash_password, verify_password, create_access_token, verify_token
 from config import ALLOWED_ORIGINS
@@ -43,7 +51,7 @@ def get_current_user(
     request: Request,
     db: Session = Depends(get_db)
 ):
-    # Получаем токен из заголовка Authorization
+    # Получение токена из заголовка Authorization
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
         raise HTTPException(
@@ -94,6 +102,30 @@ def generate_unique_id(db: Session) -> str:
         # Проверяем, что такой ID не существует
         if not db.query(User).filter(User.unique_id == unique_id).first():
             return unique_id
+
+# Валидация файлов
+def validate_file(file: UploadFile) -> tuple[bool, str]:
+    """Валидирует загружаемый файл по расширению, MIME-типу и размеру"""
+    if not file.filename:
+        return False, "Имя файла не может быть пустым"
+    
+    # Проверяем расширение файла
+    file_extension = os.path.splitext(file.filename.lower())[1]
+    if file_extension not in ALLOWED_FILE_EXTENSIONS:
+        return False, f"Недопустимое расширение файла. Разрешены: {', '.join(ALLOWED_FILE_EXTENSIONS)}"
+    
+    # Проверяем MIME-тип (более мягкая проверка)
+    if file.content_type and file.content_type not in ALLOWED_MIME_TYPES:
+        # Логируем предупреждение, но не блокируем загрузку
+        print(f"Предупреждение: Несоответствие MIME-типа для {file.filename}. Ожидается один из: {', '.join(ALLOWED_MIME_TYPES)}, получен: {file.content_type}")
+    
+    return True, "Файл валиден"
+
+def validate_file_size(file_data: bytes) -> tuple[bool, str]:
+    """Проверяет размер файла"""
+    if len(file_data) > MAX_FILE_SIZE:
+        return False, f"Файл слишком большой. Максимальный размер: {MAX_FILE_SIZE // (1024*1024)}MB"
+    return True, "Размер файла допустим"
 
 @app.get("/")
 async def root():
@@ -169,9 +201,9 @@ async def login(user: UserLogin, response: Response, db: Session = Depends(get_d
         key="access_token",
         value=access_token,
         httponly=True,
-        secure=False,  # В продакшене должно быть True
+        secure=False,
         samesite="lax",
-        max_age=1800  # 30 минут
+        max_age=1800
     )
     
     return {
@@ -333,6 +365,416 @@ async def delete_project(
     db.delete(db_project)
     db.commit()
     return {"message": "Проект удален"}
+
+
+@app.post("/api/upload/")
+async def upload_file(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user)
+):
+    """Загрузка файла с валидацией"""
+    if not minio_client:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Сервис хранения файлов недоступен"
+        )
+    
+    try:
+        # Валидация файла
+        is_valid, error_message = validate_file(file)
+        if not is_valid:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=error_message
+            )
+        
+        # Читаем содержимое файла
+        file_data = await file.read()
+        
+        # Проверяем размер файла
+        size_valid, size_error = validate_file_size(file_data)
+        if not size_valid:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=size_error
+            )
+        
+        # Генерируем уникальное имя файла
+        file_extension = os.path.splitext(file.filename)[1]
+        unique_filename = f"{current_user.unique_id}_{file.filename}"
+        
+        # Сохраняем в MinIO
+        minio_client.put_object(
+            BUCKET_NAME,
+            unique_filename,
+            io.BytesIO(file_data),
+            length=len(file_data),
+            content_type=file.content_type
+        )
+        
+        return {
+            "message": f"Файл {file.filename} успешно загружен",
+            "filename": unique_filename,
+            "original_name": file.filename,
+            "size": len(file_data)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка загрузки файла: {str(e)}"
+        )
+
+@app.get("/api/download/{filename}")
+async def download_file(
+    filename: str,
+    current_user: User = Depends(get_current_user)
+):
+    """Скачивание файла с проверкой прав доступа"""
+    if not minio_client:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Сервис хранения файлов недоступен"
+        )
+    
+    try:
+        # Проверяем, что файл принадлежит пользователю
+        if not filename.startswith(f"{current_user.unique_id}_"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Нет прав доступа к этому файлу"
+            )
+        
+        # Получаем файл из MinIO
+        response = minio_client.get_object(BUCKET_NAME, filename)
+        
+        # Определяем MIME-тип по расширению
+        file_extension = os.path.splitext(filename)[1].lower()
+        mime_type_map = {
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.webp': 'image/webp',
+            '.css': 'text/css',
+            '.html': 'text/html',
+            '.js': 'application/javascript'
+        }
+        media_type = mime_type_map.get(file_extension, 'application/octet-stream')
+        
+        return StreamingResponse(
+            response,
+            media_type=media_type,
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "Cache-Control": "no-cache"
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Файл не найден: {str(e)}"
+        )
+
+@app.get("/api/files/")
+async def list_user_files(current_user: User = Depends(get_current_user)):
+    """Получение списка файлов пользователя"""
+    if not minio_client:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Сервис хранения файлов недоступен"
+        )
+    
+    try:
+        # Получаем список объектов с префиксом пользователя
+        objects = minio_client.list_objects(
+            BUCKET_NAME, 
+            prefix=f"{current_user.unique_id}_",
+            recursive=True
+        )
+        
+        files = []
+        for obj in objects:
+            files.append({
+                "filename": obj.object_name,
+                "original_name": obj.object_name.replace(f"{current_user.unique_id}_", "", 1),
+                "size": obj.size,
+                "last_modified": obj.last_modified
+            })
+        
+        return {"files": files}
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка получения списка файлов: {str(e)}"
+        )
+
+@app.delete("/api/files/{filename}")
+async def delete_file(
+    filename: str,
+    current_user: User = Depends(get_current_user)
+):
+    """Удаление файла пользователя"""
+    if not minio_client:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Сервис хранения файлов недоступен"
+        )
+    
+    try:
+        # Проверяем, что файл принадлежит пользователю
+        if not filename.startswith(f"{current_user.unique_id}_"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Нет прав доступа к этому файлу"
+            )
+        
+        # Удаляем файл из MinIO
+        minio_client.remove_object(BUCKET_NAME, filename)
+        
+        return {"message": f"Файл {filename} успешно удален"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка удаления файла: {str(e)}"
+        )
+
+# Управление файлами проектов
+@app.post("/api/projects/{project_id}/files", response_model=ProjectFileResponse)
+async def upload_project_file(
+    project_id: int,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Загрузка файла в проект (только автор)"""
+    if not minio_client:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Сервис хранения файлов недоступен"
+        )
+    
+    # Проверяем, что проект принадлежит пользователю
+    project = db.query(Project).filter(
+        Project.id == project_id,
+        Project.owner_id == current_user.id
+    ).first()
+    
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Проект не найден или нет прав доступа"
+        )
+    
+    try:
+        # Валидация файла
+        is_valid, error_message = validate_file(file)
+        if not is_valid:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=error_message
+            )
+        
+        # Читаем содержимое файла
+        file_data = await file.read()
+        
+        # Проверяем размер файла
+        size_valid, size_error = validate_file_size(file_data)
+        if not size_valid:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=size_error
+            )
+        
+        # Генерируем уникальное имя файла
+        file_extension = os.path.splitext(file.filename)[1]
+        unique_filename = f"project_{project_id}_{current_user.unique_id}_{file.filename}"
+        
+        # Сохраняем в MinIO
+        minio_client.put_object(
+            BUCKET_NAME,
+            unique_filename,
+            io.BytesIO(file_data),
+            length=len(file_data),
+            content_type=file.content_type or "application/octet-stream"
+        )
+        
+        # Сохраняем информацию о файле в БД
+        db_file = ProjectFile(
+            filename=unique_filename,
+            original_filename=file.filename,
+            file_size=len(file_data),
+            content_type=file.content_type or "application/octet-stream",
+            project_id=project_id
+        )
+        
+        db.add(db_file)
+        db.commit()
+        db.refresh(db_file)
+        
+        return db_file
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка загрузки файла: {str(e)}"
+        )
+
+@app.get("/api/projects/{project_id}/files", response_model=List[ProjectFileResponse])
+async def get_project_files(
+    project_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Получение списка файлов проекта (только автор)"""
+    # Проверяем, что проект принадлежит пользователю
+    project = db.query(Project).filter(
+        Project.id == project_id,
+        Project.owner_id == current_user.id
+    ).first()
+    
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Проект не найден или нет прав доступа"
+        )
+    
+    files = db.query(ProjectFile).filter(ProjectFile.project_id == project_id).all()
+    return files
+
+@app.get("/api/projects/{project_id}/files/{file_id}/download")
+async def download_project_file(
+    project_id: int,
+    file_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Скачивание файла проекта (только автор)"""
+    if not minio_client:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Сервис хранения файлов недоступен"
+        )
+    
+    # Проверяем, что проект принадлежит пользователю
+    project = db.query(Project).filter(
+        Project.id == project_id,
+        Project.owner_id == current_user.id
+    ).first()
+    
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Проект не найден или нет прав доступа"
+        )
+    
+    # Получаем информацию о файле
+    file_record = db.query(ProjectFile).filter(
+        ProjectFile.id == file_id,
+        ProjectFile.project_id == project_id
+    ).first()
+    
+    if not file_record:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Файл не найден"
+        )
+    
+    try:
+        # Получаем файл из MinIO
+        response = minio_client.get_object(BUCKET_NAME, file_record.filename)
+        
+        # Определяем MIME-тип по расширению
+        file_extension = os.path.splitext(file_record.original_filename)[1].lower()
+        mime_type_map = {
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.webp': 'image/webp',
+            '.css': 'text/css',
+            '.html': 'text/html',
+            '.js': 'application/javascript'
+        }
+        media_type = mime_type_map.get(file_extension, 'application/octet-stream')
+        
+        return StreamingResponse(
+            response,
+            media_type=media_type,
+            headers={
+                "Content-Disposition": f"attachment; filename={file_record.original_filename}",
+                "Cache-Control": "no-cache"
+            }
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка получения файла: {str(e)}"
+        )
+
+@app.delete("/api/projects/{project_id}/files/{file_id}")
+async def delete_project_file(
+    project_id: int,
+    file_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Удаление файла проекта (только автор)"""
+    if not minio_client:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Сервис хранения файлов недоступен"
+        )
+    
+    # Проверяем, что проект принадлежит пользователю
+    project = db.query(Project).filter(
+        Project.id == project_id,
+        Project.owner_id == current_user.id
+    ).first()
+    
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Проект не найден или нет прав доступа"
+        )
+    
+    # Получаем информацию о файле
+    file_record = db.query(ProjectFile).filter(
+        ProjectFile.id == file_id,
+        ProjectFile.project_id == project_id
+    ).first()
+    
+    if not file_record:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Файл не найден"
+        )
+    
+    try:
+        # Удаляем файл из MinIO
+        minio_client.remove_object(BUCKET_NAME, file_record.filename)
+        
+        # Удаляем запись из БД
+        db.delete(file_record)
+        db.commit()
+        
+        return {"message": f"Файл {file_record.original_filename} успешно удален"}
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка удаления файла: {str(e)}"
+        )
 
 if __name__ == "__main__":
     import uvicorn

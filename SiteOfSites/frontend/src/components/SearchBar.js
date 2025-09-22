@@ -121,3 +121,4 @@ const SearchBar = ({ onUserSelect }) => {
 
 export default SearchBar;
 
+

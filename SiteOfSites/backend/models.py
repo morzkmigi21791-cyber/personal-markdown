@@ -29,3 +29,19 @@ class Project(Base):
     
     # Связь с пользователем
     owner = relationship("User", back_populates="projects")
+    # Связь с файлами
+    files = relationship("ProjectFile", back_populates="project", cascade="all, delete-orphan")
+
+class ProjectFile(Base):
+    __tablename__ = "project_files"
+
+    id = Column(Integer, primary_key=True, index=True)
+    filename = Column(String(255), nullable=False)  # Имя файла в MinIO
+    original_filename = Column(String(255), nullable=False)  # Оригинальное имя файла
+    file_size = Column(Integer, nullable=False)
+    content_type = Column(String(100), nullable=False)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Связь с проектом
+    project = relationship("Project", back_populates="files")

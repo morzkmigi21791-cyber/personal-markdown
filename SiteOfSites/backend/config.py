@@ -22,3 +22,20 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 # CORS настройки
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+
+# MinIO настройки
+MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "localhost:9000")
+MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "Qwerty")
+MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "19216811!")
+MINIO_SECURE = os.getenv("MINIO_SECURE", "False").lower() == "true"
+MINIO_BUCKET_NAME = os.getenv("MINIO_BUCKET_NAME", "mybucket")
+
+# Разрешенные форматы файлов
+ALLOWED_FILE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp', '.css', '.html', '.js'}
+ALLOWED_MIME_TYPES = {
+    'image/png', 'image/jpeg', 'image/webp', 
+    'text/css', 'text/html', 'application/javascript'
+}
+
+# Максимальный размер файла (10MB)
+MAX_FILE_SIZE = 10 * 1024 * 1024
