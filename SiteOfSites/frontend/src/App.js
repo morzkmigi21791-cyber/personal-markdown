@@ -43,7 +43,6 @@ function AppContent() {
         }
       }
     } catch (error) {
-      console.log('Пользователь не аутентифицирован');
       // Удаляем недействительный токен
       localStorage.removeItem('access_token');
     } finally {
@@ -101,7 +100,7 @@ function AppContent() {
     try {
       await axios.post('/api/auth/logout');
     } catch (error) {
-      console.error('Ошибка при выходе:', error);
+      // Игнорируем ошибки при выходе
     } finally {
       // Удаляем токен из localStorage
       localStorage.removeItem('access_token');

@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Depends, Response, status, Request, 
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from datetime import timedelta
-from typing import List
+from typing import List, Optional
 import re
 import string
 import random
@@ -16,10 +16,11 @@ from config import ALLOWED_FILE_EXTENSIONS, ALLOWED_MIME_TYPES, MAX_FILE_SIZE
 
 
 from database import SessionLocal, engine
-from models import Base, User, Project, ProjectFile
+from models import Base, User, Project, ProjectFile, ProjectFolder
 from schemas import (
     UserCreate, UserLogin, UserResponse, UserProfileUpdate, 
-    ProjectCreate, ProjectResponse, ProjectFileResponse, UserWithProjects, UserSearchResult, Token
+    ProjectCreate, ProjectResponse, ProjectFileResponse, ProjectFolderResponse, ProjectFolderCreate,
+    UserWithProjects, UserSearchResult, Token
 )
 from security import hash_password, verify_password, create_access_token, verify_token
 from config import ALLOWED_ORIGINS
@@ -116,8 +117,8 @@ def validate_file(file: UploadFile) -> tuple[bool, str]:
     
     # Проверяем MIME-тип (более мягкая проверка)
     if file.content_type and file.content_type not in ALLOWED_MIME_TYPES:
-        # Логируем предупреждение, но не блокируем загрузку
-        print(f"Предупреждение: Несоответствие MIME-типа для {file.filename}. Ожидается один из: {', '.join(ALLOWED_MIME_TYPES)}, получен: {file.content_type}")
+        # MIME-тип не соответствует ожидаемому, но не блокируем загрузку
+        pass
     
     return True, "Файл валиден"
 
@@ -300,6 +301,7 @@ async def create_project(
     db: Session = Depends(get_db)
 ):
     """Создание нового проекта"""
+    from sqlalchemy.orm import joinedload
     db_project = Project(
         title=project.title,
         description=project.description,
@@ -308,6 +310,8 @@ async def create_project(
     db.add(db_project)
     db.commit()
     db.refresh(db_project)
+    # Загружаем проект с файлами для корректной сериализации
+    db_project = db.query(Project).options(joinedload(Project.files)).filter(Project.id == db_project.id).first()
     return db_project
 
 @app.get("/api/projects", response_model=List[ProjectResponse])
@@ -316,7 +320,8 @@ async def get_user_projects(
     db: Session = Depends(get_db)
 ):
     """Получение проектов текущего пользователя"""
-    projects = db.query(Project).filter(Project.owner_id == current_user.id).all()
+    from sqlalchemy.orm import joinedload
+    projects = db.query(Project).options(joinedload(Project.files)).filter(Project.owner_id == current_user.id).all()
     return projects
 
 @app.put("/api/projects/{project_id}", response_model=ProjectResponse)
@@ -327,6 +332,7 @@ async def update_project(
     db: Session = Depends(get_db)
 ):
     """Обновление проекта"""
+    from sqlalchemy.orm import joinedload
     db_project = db.query(Project).filter(
         Project.id == project_id,
         Project.owner_id == current_user.id
@@ -342,6 +348,8 @@ async def update_project(
     db_project.description = project.description
     db.commit()
     db.refresh(db_project)
+    # Загружаем проект с файлами для корректной сериализации
+    db_project = db.query(Project).options(joinedload(Project.files)).filter(Project.id == project_id).first()
     return db_project
 
 @app.delete("/api/projects/{project_id}")
@@ -775,6 +783,166 @@ async def delete_project_file(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка удаления файла: {str(e)}"
         )
+
+# Управление папками проектов
+@app.post("/api/projects/{project_id}/folders", response_model=ProjectFolderResponse)
+async def create_project_folder(
+    project_id: int,
+    folder: ProjectFolderCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Создание папки в проекте (только автор)"""
+    # Проверяем, что проект принадлежит пользователю
+    project = db.query(Project).filter(
+        Project.id == project_id,
+        Project.owner_id == current_user.id
+    ).first()
+    
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Проект не найден или нет прав доступа"
+        )
+    
+    # Проверяем, что родительская папка существует и принадлежит проекту
+    if folder.parent_folder_id:
+        parent_folder = db.query(ProjectFolder).filter(
+            ProjectFolder.id == folder.parent_folder_id,
+            ProjectFolder.project_id == project_id
+        ).first()
+        
+        if not parent_folder:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Родительская папка не найдена"
+            )
+    
+    # Создаем папку
+    db_folder = ProjectFolder(
+        name=folder.name,
+        project_id=project_id,
+        parent_folder_id=folder.parent_folder_id
+    )
+    
+    db.add(db_folder)
+    db.commit()
+    db.refresh(db_folder)
+    
+    return db_folder
+
+@app.get("/api/projects/{project_id}/folders", response_model=List[ProjectFolderResponse])
+async def get_project_folders(
+    project_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Получение списка папок проекта (только автор)"""
+    # Проверяем, что проект принадлежит пользователю
+    project = db.query(Project).filter(
+        Project.id == project_id,
+        Project.owner_id == current_user.id
+    ).first()
+    
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Проект не найден или нет прав доступа"
+        )
+    
+    folders = db.query(ProjectFolder).filter(ProjectFolder.project_id == project_id).all()
+    return folders
+
+@app.delete("/api/projects/{project_id}/folders/{folder_id}")
+async def delete_project_folder(
+    project_id: int,
+    folder_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Удаление папки проекта (только автор)"""
+    # Проверяем, что проект принадлежит пользователю
+    project = db.query(Project).filter(
+        Project.id == project_id,
+        Project.owner_id == current_user.id
+    ).first()
+    
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Проект не найден или нет прав доступа"
+        )
+    
+    # Получаем папку
+    folder = db.query(ProjectFolder).filter(
+        ProjectFolder.id == folder_id,
+        ProjectFolder.project_id == project_id
+    ).first()
+    
+    if not folder:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Папка не найдена"
+        )
+    
+    # Удаляем папку (каскадное удаление файлов и подпапок)
+    db.delete(folder)
+    db.commit()
+    
+    return {"message": f"Папка {folder.name} успешно удалена"}
+
+@app.put("/api/projects/{project_id}/files/{file_id}/move")
+async def move_file_to_folder(
+    project_id: int,
+    file_id: int,
+    folder_id: Optional[int] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Перемещение файла в папку (только автор)"""
+    # Проверяем, что проект принадлежит пользователю
+    project = db.query(Project).filter(
+        Project.id == project_id,
+        Project.owner_id == current_user.id
+    ).first()
+    
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Проект не найден или нет прав доступа"
+        )
+    
+    # Получаем файл
+    file_record = db.query(ProjectFile).filter(
+        ProjectFile.id == file_id,
+        ProjectFile.project_id == project_id
+    ).first()
+    
+    if not file_record:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Файл не найден"
+        )
+    
+    # Если указана папка, проверяем что она существует и принадлежит проекту
+    if folder_id:
+        folder = db.query(ProjectFolder).filter(
+            ProjectFolder.id == folder_id,
+            ProjectFolder.project_id == project_id
+        ).first()
+        
+        if not folder:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Папка не найдена"
+            )
+    
+    # Обновляем папку файла
+    file_record.folder_id = folder_id
+    db.commit()
+    db.refresh(file_record)
+    
+    return {"message": "Файл успешно перемещен"}
 
 if __name__ == "__main__":
     import uvicorn

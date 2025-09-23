@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import axios from 'axios';
+import ProjectFileModal from '../components/ProjectFileModal';
 import './UserProfilePage.css';
 
 const UserProfilePage = ({ user: currentUser }) => {
@@ -8,6 +9,8 @@ const UserProfilePage = ({ user: currentUser }) => {
   const [profileUser, setProfileUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [selectedProject, setSelectedProject] = useState(null);
+  const [showFileModal, setShowFileModal] = useState(false);
 
   useEffect(() => {
     fetchUserProfile();
@@ -19,7 +22,6 @@ const UserProfilePage = ({ user: currentUser }) => {
       const response = await axios.get(`/api/users/by-unique-id/${uniqueId}`);
       setProfileUser(response.data);
     } catch (error) {
-      console.error('Error fetching user profile:', error);
       setError('Пользователь не найден');
     } finally {
       setLoading(false);
@@ -47,6 +49,23 @@ const UserProfilePage = ({ user: currentUser }) => {
 
   const isOwnProfile = currentUser && currentUser.unique_id === uniqueId;
 
+  const handleProjectClick = (project) => {
+    if (isOwnProfile) {
+      setSelectedProject(project);
+      setShowFileModal(true);
+    }
+  };
+
+  const handleFileModalClose = () => {
+    setShowFileModal(false);
+    setSelectedProject(null);
+  };
+
+  const handleProjectUpdate = () => {
+    // Обновляем список проектов после изменений в файлах
+    fetchUserProfile();
+  };
+
   return (
     <div className="user-profile-page">
       <div className="profile-container">
@@ -71,7 +90,11 @@ const UserProfilePage = ({ user: currentUser }) => {
             {profileUser.projects && profileUser.projects.length > 0 ? (
               <div className="projects-grid">
                 {profileUser.projects.map((project) => (
-                  <div key={project.id} className="project-card">
+                  <div 
+                    key={project.id} 
+                    className={`project-card ${isOwnProfile ? 'clickable' : ''}`}
+                    onClick={() => handleProjectClick(project)}
+                  >
                     <h3>{project.title}</h3>
                     <p>{project.description || 'Без описания'}</p>
                     <div className="project-meta">
@@ -82,6 +105,11 @@ const UserProfilePage = ({ user: currentUser }) => {
                         {new Date(project.created_at).toLocaleDateString()}
                       </span>
                     </div>
+                    {isOwnProfile && (
+                      <div className="project-files-count">
+                        Файлов: {project.files ? project.files.length : 0}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -104,6 +132,15 @@ const UserProfilePage = ({ user: currentUser }) => {
           )}
         </div>
       </div>
+
+      {showFileModal && selectedProject && (
+        <ProjectFileModal
+          project={selectedProject}
+          isOpen={showFileModal}
+          onClose={handleFileModalClose}
+          onUpdate={handleProjectUpdate}
+        />
+      )}
     </div>
   );
 };

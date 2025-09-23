@@ -79,10 +79,25 @@ class ProjectFileResponse(BaseModel):
     original_filename: str
     file_size: int
     content_type: str
+    folder_id: Optional[int] = None
     created_at: datetime
     
     class Config:
         from_attributes = True
+
+class ProjectFolderResponse(BaseModel):
+    id: int
+    name: str
+    project_id: int
+    parent_folder_id: Optional[int] = None
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class ProjectFolderCreate(BaseModel):
+    name: str
+    parent_folder_id: Optional[int] = None
 
 class ProjectResponse(ProjectBase):
     id: int

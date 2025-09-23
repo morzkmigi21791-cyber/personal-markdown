@@ -199,6 +199,25 @@
   box-shadow: 0 4px 12px rgba(0, 123, 255, 0.1);
 }
 
+.project-card.clickable {
+  cursor: pointer;
+  position: relative;
+}
+
+.project-card.clickable:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(0, 123, 255, 0.15);
+}
+
+.project-card.clickable::after {
+  content: '📁';
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  font-size: 16px;
+  opacity: 0.6;
+}
+
 .project-card h3 {
   margin: 0 0 12px 0;
   color: #333;
@@ -229,6 +248,17 @@
 
 .project-date {
   color: #6c757d;
+}
+
+.project-files-count {
+  margin-top: 8px;
+  padding: 4px 8px;
+  background: #e3f2fd;
+  color: #1976d2;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  display: inline-block;
 }
 
 .no-projects {
