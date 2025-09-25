@@ -105,11 +105,6 @@ const UserProfilePage = ({ user: currentUser }) => {
                         {new Date(project.created_at).toLocaleDateString()}
                       </span>
                     </div>
-                    {isOwnProfile && (
-                      <div className="project-files-count">
-                        Файлов: {project.files ? project.files.length : 0}
-                      </div>
-                    )}
                   </div>
                 ))}
               </div>

@@ -16,10 +16,10 @@ from config import ALLOWED_FILE_EXTENSIONS, ALLOWED_MIME_TYPES, MAX_FILE_SIZE
 
 
 from database import SessionLocal, engine
-from models import Base, User, Project, ProjectFile, ProjectFolder
+from models import Base, User, Project
 from schemas import (
     UserCreate, UserLogin, UserResponse, UserProfileUpdate, 
-    ProjectCreate, ProjectResponse, ProjectFileResponse, ProjectFolderResponse, ProjectFolderCreate,
+    ProjectCreate, ProjectResponse,
     UserWithProjects, UserSearchResult, Token
 )
 from security import hash_password, verify_password, create_access_token, verify_token
@@ -127,6 +127,26 @@ def validate_file_size(file_data: bytes) -> tuple[bool, str]:
     if len(file_data) > MAX_FILE_SIZE:
         return False, f"Файл слишком большой. Максимальный размер: {MAX_FILE_SIZE // (1024*1024)}MB"
     return True, "Размер файла допустим"
+
+def create_project_images_folder(user_unique_id: str, project_id: int):
+    """Создает папку images для проекта в MinIO"""
+    if not minio_client:
+        return False
+    
+    try:
+        # Создаем пустой файл-маркер для папки images
+        folder_marker = f"{user_unique_id}/{project_id}/images/.gitkeep"
+        minio_client.put_object(
+            BUCKET_NAME,
+            folder_marker,
+            io.BytesIO(b""),
+            length=0,
+            content_type="text/plain"
+        )
+        return True
+    except Exception as e:
+        print(f"Ошибка создания папки images: {e}")
+        return False
 
 @app.get("/")
 async def root():
@@ -301,7 +321,6 @@ async def create_project(
     db: Session = Depends(get_db)
 ):
     """Создание нового проекта"""
-    from sqlalchemy.orm import joinedload
     db_project = Project(
         title=project.title,
         description=project.description,
@@ -310,8 +329,10 @@ async def create_project(
     db.add(db_project)
     db.commit()
     db.refresh(db_project)
-    # Загружаем проект с файлами для корректной сериализации
-    db_project = db.query(Project).options(joinedload(Project.files)).filter(Project.id == db_project.id).first()
+    
+    # Автоматически создаем папку images для проекта
+    create_project_images_folder(current_user.unique_id, db_project.id)
+    
     return db_project
 
 @app.get("/api/projects", response_model=List[ProjectResponse])
@@ -320,8 +341,7 @@ async def get_user_projects(
     db: Session = Depends(get_db)
 ):
     """Получение проектов текущего пользователя"""
-    from sqlalchemy.orm import joinedload
-    projects = db.query(Project).options(joinedload(Project.files)).filter(Project.owner_id == current_user.id).all()
+    projects = db.query(Project).filter(Project.owner_id == current_user.id).all()
     return projects
 
 @app.put("/api/projects/{project_id}", response_model=ProjectResponse)
@@ -332,7 +352,6 @@ async def update_project(
     db: Session = Depends(get_db)
 ):
     """Обновление проекта"""
-    from sqlalchemy.orm import joinedload
     db_project = db.query(Project).filter(
         Project.id == project_id,
         Project.owner_id == current_user.id
@@ -348,8 +367,6 @@ async def update_project(
     db_project.description = project.description
     db.commit()
     db.refresh(db_project)
-    # Загружаем проект с файлами для корректной сериализации
-    db_project = db.query(Project).options(joinedload(Project.files)).filter(Project.id == project_id).first()
     return db_project
 
 @app.delete("/api/projects/{project_id}")
@@ -380,7 +397,7 @@ async def upload_file(
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user)
 ):
-    """Загрузка файла с валидацией"""
+    """Загрузка файла с валидацией (в корень пользователя)"""
     if not minio_client:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -409,7 +426,7 @@ async def upload_file(
         
         # Генерируем уникальное имя файла
         file_extension = os.path.splitext(file.filename)[1]
-        unique_filename = f"{current_user.unique_id}_{file.filename}"
+        unique_filename = f"{current_user.unique_id}/{file.filename}"
         
         # Сохраняем в MinIO
         minio_client.put_object(
@@ -449,7 +466,7 @@ async def download_file(
     
     try:
         # Проверяем, что файл принадлежит пользователю
-        if not filename.startswith(f"{current_user.unique_id}_"):
+        if not filename.startswith(f"{current_user.unique_id}/"):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Нет прав доступа к этому файлу"
@@ -475,7 +492,7 @@ async def download_file(
             response,
             media_type=media_type,
             headers={
-                "Content-Disposition": f"attachment; filename={filename}",
+                "Content-Disposition": f"attachment; filename={os.path.basename(filename)}",
                 "Cache-Control": "no-cache"
             }
         )
@@ -501,7 +518,7 @@ async def list_user_files(current_user: User = Depends(get_current_user)):
         # Получаем список объектов с префиксом пользователя
         objects = minio_client.list_objects(
             BUCKET_NAME, 
-            prefix=f"{current_user.unique_id}_",
+            prefix=f"{current_user.unique_id}/",
             recursive=True
         )
         
@@ -509,7 +526,7 @@ async def list_user_files(current_user: User = Depends(get_current_user)):
         for obj in objects:
             files.append({
                 "filename": obj.object_name,
-                "original_name": obj.object_name.replace(f"{current_user.unique_id}_", "", 1),
+                "original_name": os.path.basename(obj.object_name),
                 "size": obj.size,
                 "last_modified": obj.last_modified
             })
@@ -536,7 +553,7 @@ async def delete_file(
     
     try:
         # Проверяем, что файл принадлежит пользователю
-        if not filename.startswith(f"{current_user.unique_id}_"):
+        if not filename.startswith(f"{current_user.unique_id}/"):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Нет прав доступа к этому файлу"
@@ -545,7 +562,7 @@ async def delete_file(
         # Удаляем файл из MinIO
         minio_client.remove_object(BUCKET_NAME, filename)
         
-        return {"message": f"Файл {filename} успешно удален"}
+        return {"message": f"Файл {os.path.basename(filename)} успешно удален"}
         
     except HTTPException:
         raise
@@ -556,10 +573,11 @@ async def delete_file(
         )
 
 # Управление файлами проектов
-@app.post("/api/projects/{project_id}/files", response_model=ProjectFileResponse)
+@app.post("/api/projects/{project_id}/files")
 async def upload_project_file(
     project_id: int,
     file: UploadFile = File(...),
+    folder: str = "root",
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -582,6 +600,13 @@ async def upload_project_file(
             detail="Проект не найден или нет прав доступа"
         )
     
+    # Проверяем, что папка существует (только root и images)
+    if folder not in ["root", "images"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Недопустимая папка. Разрешены только 'root' и 'images'"
+        )
+    
     try:
         # Валидация файла
         is_valid, error_message = validate_file(file)
@@ -602,9 +627,11 @@ async def upload_project_file(
                 detail=size_error
             )
         
-        # Генерируем уникальное имя файла
-        file_extension = os.path.splitext(file.filename)[1]
-        unique_filename = f"project_{project_id}_{current_user.unique_id}_{file.filename}"
+        # Генерируем путь для файла: user_id/project_id/folder/filename
+        if folder == "root":
+            unique_filename = f"{current_user.unique_id}/{project_id}/{file.filename}"
+        else:  # images
+            unique_filename = f"{current_user.unique_id}/{project_id}/{folder}/{file.filename}"
         
         # Сохраняем в MinIO
         minio_client.put_object(
@@ -615,20 +642,13 @@ async def upload_project_file(
             content_type=file.content_type or "application/octet-stream"
         )
         
-        # Сохраняем информацию о файле в БД
-        db_file = ProjectFile(
-            filename=unique_filename,
-            original_filename=file.filename,
-            file_size=len(file_data),
-            content_type=file.content_type or "application/octet-stream",
-            project_id=project_id
-        )
-        
-        db.add(db_file)
-        db.commit()
-        db.refresh(db_file)
-        
-        return db_file
+        return {
+            "message": f"Файл {file.filename} успешно загружен в папку {folder}",
+            "filename": unique_filename,
+            "original_name": file.filename,
+            "folder": folder,
+            "size": len(file_data)
+        }
         
     except HTTPException:
         raise
@@ -638,13 +658,19 @@ async def upload_project_file(
             detail=f"Ошибка загрузки файла: {str(e)}"
         )
 
-@app.get("/api/projects/{project_id}/files", response_model=List[ProjectFileResponse])
+@app.get("/api/projects/{project_id}/files")
 async def get_project_files(
     project_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Получение списка файлов проекта (только автор)"""
+    if not minio_client:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Сервис хранения файлов недоступен"
+        )
+    
     # Проверяем, что проект принадлежит пользователю
     project = db.query(Project).filter(
         Project.id == project_id,
@@ -657,13 +683,59 @@ async def get_project_files(
             detail="Проект не найден или нет прав доступа"
         )
     
-    files = db.query(ProjectFile).filter(ProjectFile.project_id == project_id).all()
-    return files
+    try:
+        # Получаем список файлов проекта из MinIO
+        objects = minio_client.list_objects(
+            BUCKET_NAME, 
+            prefix=f"{current_user.unique_id}/{project_id}/",
+            recursive=True
+        )
+        
+        files = []
+        folders = set()
+        
+        for obj in objects:
+            # Пропускаем служебные файлы (.gitkeep)
+            if obj.object_name.endswith('.gitkeep'):
+                continue
+                
+            relative_path = obj.object_name.replace(f"{current_user.unique_id}/{project_id}/", "")
+            
+            # Если файл в папке images, добавляем его в папку
+            if relative_path.startswith("images/"):
+                folder_name = "images"
+                file_name = relative_path.replace("images/", "")
+            else:
+                folder_name = "root"
+                file_name = relative_path
+            
+            # Добавляем папку в список папок
+            folders.add(folder_name)
+            
+            files.append({
+                "filename": obj.object_name,
+                "original_name": file_name,
+                "folder": folder_name,
+                "size": obj.size,
+                "last_modified": obj.last_modified
+            })
+        
+        return {
+            "files": files,
+            "folders": list(folders)
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка получения файлов проекта: {str(e)}"
+        )
 
-@app.get("/api/projects/{project_id}/files/{file_id}/download")
+@app.get("/api/projects/{project_id}/files/download")
 async def download_project_file(
     project_id: int,
-    file_id: int,
+    filename: str,
+    folder: str = "root",
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -686,24 +758,25 @@ async def download_project_file(
             detail="Проект не найден или нет прав доступа"
         )
     
-    # Получаем информацию о файле
-    file_record = db.query(ProjectFile).filter(
-        ProjectFile.id == file_id,
-        ProjectFile.project_id == project_id
-    ).first()
-    
-    if not file_record:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Файл не найден"
-        )
-    
     try:
+        # Формируем полный путь к файлу
+        if folder == "root":
+            full_filename = f"{current_user.unique_id}/{project_id}/{filename}"
+        else:  # images
+            full_filename = f"{current_user.unique_id}/{project_id}/{folder}/{filename}"
+        
+        # Проверяем, что файл принадлежит проекту пользователя
+        if not full_filename.startswith(f"{current_user.unique_id}/{project_id}/"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Нет прав доступа к этому файлу"
+            )
+        
         # Получаем файл из MinIO
-        response = minio_client.get_object(BUCKET_NAME, file_record.filename)
+        response = minio_client.get_object(BUCKET_NAME, full_filename)
         
         # Определяем MIME-тип по расширению
-        file_extension = os.path.splitext(file_record.original_filename)[1].lower()
+        file_extension = os.path.splitext(filename)[1].lower()
         mime_type_map = {
             '.png': 'image/png',
             '.jpg': 'image/jpeg',
@@ -719,21 +792,22 @@ async def download_project_file(
             response,
             media_type=media_type,
             headers={
-                "Content-Disposition": f"attachment; filename={file_record.original_filename}",
+                "Content-Disposition": f"attachment; filename={filename}",
                 "Cache-Control": "no-cache"
             }
         )
         
     except Exception as e:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ошибка получения файла: {str(e)}"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Файл не найден: {str(e)}"
         )
 
-@app.delete("/api/projects/{project_id}/files/{file_id}")
+@app.delete("/api/projects/{project_id}/files")
 async def delete_project_file(
     project_id: int,
-    file_id: int,
+    filename: str,
+    folder: str = "root",
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -756,27 +830,24 @@ async def delete_project_file(
             detail="Проект не найден или нет прав доступа"
         )
     
-    # Получаем информацию о файле
-    file_record = db.query(ProjectFile).filter(
-        ProjectFile.id == file_id,
-        ProjectFile.project_id == project_id
-    ).first()
-    
-    if not file_record:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Файл не найден"
-        )
-    
     try:
+        # Формируем полный путь к файлу
+        if folder == "root":
+            full_filename = f"{current_user.unique_id}/{project_id}/{filename}"
+        else:  # images
+            full_filename = f"{current_user.unique_id}/{project_id}/{folder}/{filename}"
+        
+        # Проверяем, что файл принадлежит проекту пользователя
+        if not full_filename.startswith(f"{current_user.unique_id}/{project_id}/"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Нет прав доступа к этому файлу"
+            )
+        
         # Удаляем файл из MinIO
-        minio_client.remove_object(BUCKET_NAME, file_record.filename)
+        minio_client.remove_object(BUCKET_NAME, full_filename)
         
-        # Удаляем запись из БД
-        db.delete(file_record)
-        db.commit()
-        
-        return {"message": f"Файл {file_record.original_filename} успешно удален"}
+        return {"message": f"Файл {filename} успешно удален из папки {folder}"}
         
     except Exception as e:
         raise HTTPException(
@@ -784,165 +855,6 @@ async def delete_project_file(
             detail=f"Ошибка удаления файла: {str(e)}"
         )
 
-# Управление папками проектов
-@app.post("/api/projects/{project_id}/folders", response_model=ProjectFolderResponse)
-async def create_project_folder(
-    project_id: int,
-    folder: ProjectFolderCreate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Создание папки в проекте (только автор)"""
-    # Проверяем, что проект принадлежит пользователю
-    project = db.query(Project).filter(
-        Project.id == project_id,
-        Project.owner_id == current_user.id
-    ).first()
-    
-    if not project:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Проект не найден или нет прав доступа"
-        )
-    
-    # Проверяем, что родительская папка существует и принадлежит проекту
-    if folder.parent_folder_id:
-        parent_folder = db.query(ProjectFolder).filter(
-            ProjectFolder.id == folder.parent_folder_id,
-            ProjectFolder.project_id == project_id
-        ).first()
-        
-        if not parent_folder:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Родительская папка не найдена"
-            )
-    
-    # Создаем папку
-    db_folder = ProjectFolder(
-        name=folder.name,
-        project_id=project_id,
-        parent_folder_id=folder.parent_folder_id
-    )
-    
-    db.add(db_folder)
-    db.commit()
-    db.refresh(db_folder)
-    
-    return db_folder
-
-@app.get("/api/projects/{project_id}/folders", response_model=List[ProjectFolderResponse])
-async def get_project_folders(
-    project_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Получение списка папок проекта (только автор)"""
-    # Проверяем, что проект принадлежит пользователю
-    project = db.query(Project).filter(
-        Project.id == project_id,
-        Project.owner_id == current_user.id
-    ).first()
-    
-    if not project:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Проект не найден или нет прав доступа"
-        )
-    
-    folders = db.query(ProjectFolder).filter(ProjectFolder.project_id == project_id).all()
-    return folders
-
-@app.delete("/api/projects/{project_id}/folders/{folder_id}")
-async def delete_project_folder(
-    project_id: int,
-    folder_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Удаление папки проекта (только автор)"""
-    # Проверяем, что проект принадлежит пользователю
-    project = db.query(Project).filter(
-        Project.id == project_id,
-        Project.owner_id == current_user.id
-    ).first()
-    
-    if not project:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Проект не найден или нет прав доступа"
-        )
-    
-    # Получаем папку
-    folder = db.query(ProjectFolder).filter(
-        ProjectFolder.id == folder_id,
-        ProjectFolder.project_id == project_id
-    ).first()
-    
-    if not folder:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Папка не найдена"
-        )
-    
-    # Удаляем папку (каскадное удаление файлов и подпапок)
-    db.delete(folder)
-    db.commit()
-    
-    return {"message": f"Папка {folder.name} успешно удалена"}
-
-@app.put("/api/projects/{project_id}/files/{file_id}/move")
-async def move_file_to_folder(
-    project_id: int,
-    file_id: int,
-    folder_id: Optional[int] = None,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """Перемещение файла в папку (только автор)"""
-    # Проверяем, что проект принадлежит пользователю
-    project = db.query(Project).filter(
-        Project.id == project_id,
-        Project.owner_id == current_user.id
-    ).first()
-    
-    if not project:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Проект не найден или нет прав доступа"
-        )
-    
-    # Получаем файл
-    file_record = db.query(ProjectFile).filter(
-        ProjectFile.id == file_id,
-        ProjectFile.project_id == project_id
-    ).first()
-    
-    if not file_record:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Файл не найден"
-        )
-    
-    # Если указана папка, проверяем что она существует и принадлежит проекту
-    if folder_id:
-        folder = db.query(ProjectFolder).filter(
-            ProjectFolder.id == folder_id,
-            ProjectFolder.project_id == project_id
-        ).first()
-        
-        if not folder:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Папка не найдена"
-            )
-    
-    # Обновляем папку файла
-    file_record.folder_id = folder_id
-    db.commit()
-    db.refresh(file_record)
-    
-    return {"message": "Файл успешно перемещен"}
 
 if __name__ == "__main__":
     import uvicorn
