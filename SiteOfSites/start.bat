@@ -52,60 +52,100 @@ if not exist "frontend\node_modules" (
     echo OK: Frontend dependencies found
 )
 
-echo [5/5] Checking MinIO...
+echo [5/6] Checking Docker...
 docker --version >nul 2>&1
 if errorlevel 1 (
-    echo WARNING: Docker not found. MinIO will be unavailable
-    echo    Install Docker Desktop from https://docker.com
+    echo ERROR: Docker not found! Install Docker Desktop from https://docker.com
+    pause
+    exit /b 1
 ) else (
     echo OK: Docker found
+)
+
+echo [6/6] Checking Docker Compose...
+docker-compose --version >nul 2>&1
+if errorlevel 1 (
+    echo WARNING: Docker Compose not found. Using docker compose instead...
+    set DOCKER_COMPOSE_CMD=docker compose
+) else (
+    echo OK: Docker Compose found
+    set DOCKER_COMPOSE_CMD=docker-compose
 )
 
 echo.
 echo Starting servers...
 echo.
 
-echo [1/3] Starting MinIO...
-docker ps --filter "name=minio" --format "{{.Names}}" | findstr "minio" >nul
+echo [1/4] Starting Docker services (MinIO + Nginx)...
+%DOCKER_COMPOSE_CMD% down >nul 2>&1
+%DOCKER_COMPOSE_CMD% up -d
 if errorlevel 1 (
-    echo Starting MinIO...
-    docker run -d --name minio -p 9000:9000 -p 9001:9001 -e "MINIO_ROOT_USER=Qwerty" -e "MINIO_ROOT_PASSWORD=19216811!" -v minio_data:/data quay.io/minio/minio server /data --console-address ":9001" >nul 2>&1
-    if errorlevel 1 (
-        echo WARNING: MinIO failed to start, continuing without it
-    ) else (
-        echo OK: MinIO started
-        timeout /t 5 /nobreak >nul
-    )
+    echo WARNING: Docker services failed to start, continuing without them
 ) else (
-    echo OK: MinIO already running
+    echo OK: Docker services started
+    timeout /t 5 /nobreak >nul
 )
 
-echo [2/3] Starting Backend server...
+echo [2/4] Running database migration...
+cd backend
+call venv\Scripts\activate
+python migrate_hosting.py
+if errorlevel 1 (
+    echo WARNING: Database migration failed, continuing anyway
+) else (
+    echo OK: Database migration completed
+)
+
+echo [2.5/4] Fixing enum values...
+python fix_enum_migration.py
+if errorlevel 1 (
+    echo WARNING: Enum fix failed, continuing anyway
+) else (
+    echo OK: Enum values fixed
+)
+cd ..
+
+echo [3/4] Starting Backend server...
 start "Site of Sites - Backend" cmd /k "cd backend && call venv\Scripts\activate && python run.py"
 
 timeout /t 3 /nobreak >nul
 
-echo [3/3] Starting Frontend server...
+echo [4/4] Starting Frontend server...
 start "Site of Sites - Frontend" cmd /k "cd frontend && npm start"
 
+timeout /t 3 /nobreak >nul
+
+echo [5/5] All services started successfully!
 echo.
-echo OK: All services are starting...
+echo ========================================
+echo    Service Information
+echo ========================================
 echo.
-echo Service Information:
-echo    Backend API:  http://localhost:8000
+echo Main Services:
 echo    Frontend:     http://localhost:3000
+echo    Backend API:  http://localhost:8000
 echo    API Docs:     http://localhost:8000/docs
+echo.
+echo Docker Services:
+echo    Nginx:        http://localhost (port 80)
 echo    MinIO API:    http://localhost:9000
 echo    MinIO Console: http://localhost:9001
+echo.
+echo Site Hosting:
+echo    Main Site:    http://localhost
+echo    Subdomains:   http://SUBDOMAIN.localhost
+echo    Example:      http://mysite.localhost
 echo.
 echo MinIO Access:
 echo    Login: Qwerty
 echo    Password: 19216811!
 echo.
 echo Management:
-echo    - To stop servers, close the command windows
-echo    - To manage MinIO use start_minio.bat / stop_minio.bat
+echo    - To stop all services: run stop.bat
+echo    - To stop Docker only: docker-compose down
 echo    - Server logs are displayed in separate windows
+echo.
+echo ========================================
 echo.
 echo Press any key to close this window...
 pause >nul

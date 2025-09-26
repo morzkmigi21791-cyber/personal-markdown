@@ -233,21 +233,77 @@
 
 .project-meta {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
   font-size: 14px;
   color: #888;
+  margin-top: 12px;
 }
 
-.project-status {
+.project-status,
+.project-visibility,
+.project-subdomain {
   padding: 4px 8px;
   border-radius: 4px;
   background: #e9ecef;
   color: #495057;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.project-status {
+  background: #d4edda;
+  color: #155724;
+}
+
+.project-visibility {
+  background: #d1ecf1;
+  color: #0c5460;
+}
+
+.project-subdomain {
+  background: #fff3cd;
+  color: #856404;
+  font-family: 'Courier New', monospace;
 }
 
 .project-date {
   color: #6c757d;
+  font-size: 12px;
+  margin-left: auto;
+}
+
+.project-actions {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #e9ecef;
+}
+
+.view-site-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+  color: white;
+  text-decoration: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.3s ease;
+  border: none;
+  cursor: pointer;
+}
+
+.view-site-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(40, 167, 69, 0.4);
+  color: white;
+  text-decoration: none;
+}
+
+.view-site-btn:active {
+  transform: translateY(0);
 }
 
 .project-files-count {
@@ -472,6 +528,30 @@
 
 .profile-actions .btn-primary:hover {
   background: #0056b3;
+}
+
+/* Адаптивные стили для кнопок просмотра сайта */
+@media (max-width: 768px) {
+  .project-actions {
+    margin-top: 8px;
+    padding-top: 8px;
+  }
+  
+  .view-site-btn {
+    padding: 6px 12px;
+    font-size: 12px;
+  }
+  
+  .site-url {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  
+  .site-url code {
+    min-width: auto;
+    text-align: center;
+  }
 }
 
 

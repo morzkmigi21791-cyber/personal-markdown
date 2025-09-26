@@ -87,32 +87,67 @@ const UserProfilePage = ({ user: currentUser }) => {
         <div className="profile-content">
           <div className="profile-section">
             <h2>Проекты</h2>
-            {profileUser.projects && profileUser.projects.length > 0 ? (
-              <div className="projects-grid">
-                {profileUser.projects.map((project) => (
-                  <div 
-                    key={project.id} 
-                    className={`project-card ${isOwnProfile ? 'clickable' : ''}`}
-                    onClick={() => handleProjectClick(project)}
-                  >
-                    <h3>{project.title}</h3>
-                    <p>{project.description || 'Без описания'}</p>
-                    <div className="project-meta">
-                      <span className="project-status">
-                        {project.is_public ? 'Публичный' : 'Приватный'}
-                      </span>
-                      <span className="project-date">
-                        {new Date(project.created_at).toLocaleDateString()}
-                      </span>
+            {(() => {
+              // Фильтруем проекты в зависимости от того, свой ли это профиль
+              const visibleProjects = isOwnProfile 
+                ? profileUser.projects 
+                : profileUser.projects?.filter(project => project.visibility === 'PUBLIC' && project.is_active);
+              
+              return visibleProjects && visibleProjects.length > 0 ? (
+                <div className="projects-grid">
+                  {visibleProjects.map((project) => (
+                    <div 
+                      key={project.id} 
+                      className={`project-card ${isOwnProfile ? 'clickable' : ''}`}
+                      onClick={() => handleProjectClick(project)}
+                    >
+                      <h3>{project.title}</h3>
+                      <p>{project.description || 'Без описания'}</p>
+                      <div className="project-meta">
+                        <span className="project-status">
+                          {project.is_active ? '🌐 Активен' : '⏸️ Неактивен'}
+                        </span>
+                        <span className="project-visibility">
+                          {project.visibility === 'PUBLIC' ? '🌍 Публичный' : 
+                           project.visibility === 'LINK_ONLY' ? '🔗 По ссылке' : '🔒 Приватный'}
+                        </span>
+                        {project.subdomain && project.is_active && (
+                          <span className="project-subdomain">
+                            📍 {project.subdomain}.localhost
+                          </span>
+                        )}
+                        <span className="project-date">
+                          {new Date(project.created_at).toLocaleDateString()}
+                        </span>
+                      </div>
+                      {/* Кнопка для просмотра сайта */}
+                      {project.subdomain && project.is_active && (
+                        <div className="project-actions">
+                          <a 
+                            href={`http://${project.subdomain}.localhost`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="view-site-btn"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            👁️ Посмотреть сайт
+                          </a>
+                        </div>
+                      )}
                     </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="no-projects">
-                {isOwnProfile ? 'У вас пока нет проектов' : 'У пользователя нет проектов'}
-              </p>
-            )}
+                  ))}
+                </div>
+              ) : (
+                <p className="no-projects">
+                  {isOwnProfile 
+                    ? 'У вас пока нет проектов' 
+                    : profileUser.projects && profileUser.projects.length > 0
+                      ? 'У пользователя нет публичных активных сайтов'
+                      : 'У пользователя нет проектов'
+                  }
+                </p>
+              );
+            })()}
           </div>
 
           {isOwnProfile && (

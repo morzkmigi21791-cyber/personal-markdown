@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import SiteHostingModal from './SiteHostingModal';
 import './ProjectFileModal.css';
 
 const ProjectFileModal = ({ project, isOpen, onClose, onUpdate }) => {
@@ -10,6 +11,7 @@ const ProjectFileModal = ({ project, isOpen, onClose, onUpdate }) => {
   const [error, setError] = useState(null);
   const [selectedFolder, setSelectedFolder] = useState('root');
   const [viewMode, setViewMode] = useState('grid'); // grid или list
+  const [showHostingModal, setShowHostingModal] = useState(false);
 
   useEffect(() => {
     if (isOpen && project) {
@@ -208,12 +210,28 @@ const ProjectFileModal = ({ project, isOpen, onClose, onUpdate }) => {
             </div>
           </div>
           <div className="toolbar-right">
-            <div className="file-stats">
-              {files.length > 0 && (
-                <span className="stats-text">
-                  {files.length} файл{files.length === 1 ? '' : files.length < 5 ? 'а' : 'ов'}
-                </span>
-              )}
+            <div className="toolbar-actions">
+              <button 
+                className="hosting-btn"
+                onClick={() => {
+                  const token = localStorage.getItem('access_token');
+                  if (!token) {
+                    alert('Ошибка авторизации. Пожалуйста, войдите в систему заново.');
+                    return;
+                  }
+                  setShowHostingModal(true);
+                }}
+                title="Настройки хостинга"
+              >
+                🌐 Хостинг
+              </button>
+              <div className="file-stats">
+                {files.length > 0 && (
+                  <span className="stats-text">
+                    {files.length} файл{files.length === 1 ? '' : files.length < 5 ? 'а' : 'ов'}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -297,6 +315,19 @@ const ProjectFileModal = ({ project, isOpen, onClose, onUpdate }) => {
           )}
         </div>
       </div>
+
+      {/* Модальное окно хостинга */}
+      {showHostingModal && (
+        <SiteHostingModal
+          project={project}
+          isOpen={showHostingModal}
+          onClose={() => setShowHostingModal(false)}
+          onUpdate={() => {
+            fetchFiles();
+            if (onUpdate) onUpdate();
+          }}
+        />
+      )}
     </div>
   );
 };

@@ -19,8 +19,8 @@ from database import SessionLocal, engine
 from models import Base, User, Project
 from schemas import (
     UserCreate, UserLogin, UserResponse, UserProfileUpdate, 
-    ProjectCreate, ProjectResponse,
-    UserWithProjects, UserSearchResult, Token
+    ProjectCreate, ProjectUpdate, ProjectResponse,
+    UserWithProjects, UserSearchResult, Token, SiteHostingConfig
 )
 from security import hash_password, verify_password, create_access_token, verify_token
 from config import ALLOWED_ORIGINS
@@ -147,6 +147,97 @@ def create_project_images_folder(user_unique_id: str, project_id: int):
     except Exception as e:
         print(f"Ошибка создания папки images: {e}")
         return False
+
+def validate_subdomain_unique(subdomain: str, db: Session, project_id: int = None) -> tuple[bool, str]:
+    """Проверяет уникальность поддомена"""
+    if not subdomain:
+        return True, "Поддомен не указан"
+    
+    # Проверяем, что поддомен не занят другим проектом
+    query = db.query(Project).filter(Project.subdomain == subdomain)
+    if project_id:
+        query = query.filter(Project.id != project_id)
+    
+    existing_project = query.first()
+    if existing_project:
+        return False, f"Поддомен '{subdomain}' уже занят"
+    
+    return True, "Поддомен доступен"
+
+def get_site_files_from_minio(user_unique_id: str, project_id: int):
+    """Получает файлы сайта из MinIO"""
+    if not minio_client:
+        return []
+    
+    try:
+        # Получаем файлы из корневой папки проекта (не images)
+        objects = minio_client.list_objects(
+            BUCKET_NAME,
+            prefix=f"{user_unique_id}/{project_id}/",
+            recursive=True
+        )
+        
+        site_files = []
+        for obj in objects:
+            # Пропускаем файлы из папки images и служебные файлы
+            if not obj.object_name.startswith(f"{user_unique_id}/{project_id}/images/") and not obj.object_name.endswith('.gitkeep'):
+                relative_path = obj.object_name.replace(f"{user_unique_id}/{project_id}/", "")
+                site_files.append({
+                    "filename": relative_path,
+                    "size": obj.size,
+                    "last_modified": obj.last_modified
+                })
+        
+        return site_files
+    except Exception as e:
+        print(f"Ошибка получения файлов сайта: {e}")
+        return []
+
+def serve_site_file(user_unique_id: str, project_id: int, filename: str):
+    """Отдает файл сайта из MinIO"""
+    if not minio_client:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Сервис хранения файлов недоступен"
+        )
+    
+    try:
+        # Формируем путь к файлу
+        full_filename = f"{user_unique_id}/{project_id}/{filename}"
+        
+        # Получаем файл из MinIO
+        response = minio_client.get_object(BUCKET_NAME, full_filename)
+        
+        # Определяем MIME-тип по расширению
+        file_extension = os.path.splitext(filename)[1].lower()
+        mime_type_map = {
+            '.html': 'text/html',
+            '.css': 'text/css',
+            '.js': 'application/javascript',
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.webp': 'image/webp',
+            '.svg': 'image/svg+xml',
+            '.ico': 'image/x-icon',
+            '.json': 'application/json',
+            '.txt': 'text/plain'
+        }
+        media_type = mime_type_map.get(file_extension, 'application/octet-stream')
+        
+        return StreamingResponse(
+            response,
+            media_type=media_type,
+            headers={
+                "Cache-Control": "public, max-age=3600"
+            }
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Файл не найден: {str(e)}"
+        )
 
 @app.get("/")
 async def root():
@@ -321,10 +412,23 @@ async def create_project(
     db: Session = Depends(get_db)
 ):
     """Создание нового проекта"""
+    # Проверяем уникальность поддомена, если он указан
+    if project.subdomain:
+        is_unique, message = validate_subdomain_unique(project.subdomain, db)
+        if not is_unique:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=message
+            )
+    
     db_project = Project(
         title=project.title,
         description=project.description,
-        owner_id=current_user.id
+        owner_id=current_user.id,
+        subdomain=project.subdomain,
+        visibility=project.visibility,
+        is_active=project.is_active,
+        index_file=project.index_file
     )
     db.add(db_project)
     db.commit()
@@ -347,7 +451,7 @@ async def get_user_projects(
 @app.put("/api/projects/{project_id}", response_model=ProjectResponse)
 async def update_project(
     project_id: int,
-    project: ProjectCreate,
+    project: ProjectUpdate,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -363,8 +467,29 @@ async def update_project(
             detail="Проект не найден"
         )
     
-    db_project.title = project.title
-    db_project.description = project.description
+    # Проверяем уникальность поддомена, если он указан и изменился
+    if project.subdomain and project.subdomain != db_project.subdomain:
+        is_unique, message = validate_subdomain_unique(project.subdomain, db, project_id)
+        if not is_unique:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=message
+            )
+    
+    # Обновляем поля только если они переданы
+    if project.title is not None:
+        db_project.title = project.title
+    if project.description is not None:
+        db_project.description = project.description
+    if project.subdomain is not None:
+        db_project.subdomain = project.subdomain
+    if project.visibility is not None:
+        db_project.visibility = project.visibility
+    if project.is_active is not None:
+        db_project.is_active = project.is_active
+    if project.index_file is not None:
+        db_project.index_file = project.index_file
+    
     db.commit()
     db.refresh(db_project)
     return db_project
@@ -854,6 +979,183 @@ async def delete_project_file(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка удаления файла: {str(e)}"
         )
+
+# Хостинг сайтов
+@app.get("/api/projects/{project_id}/hosting")
+async def get_project_hosting_info(
+    project_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Получение информации о хостинге проекта"""
+    project = db.query(Project).filter(
+        Project.id == project_id,
+        Project.owner_id == current_user.id
+    ).first()
+    
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Проект не найден"
+        )
+    
+    # Получаем файлы сайта
+    site_files = get_site_files_from_minio(current_user.unique_id, project_id)
+    
+    return {
+        "project": project,
+        "site_files": site_files,
+        "site_url": f"http://{project.subdomain}.localhost:3000" if project.subdomain else None
+    }
+
+@app.put("/api/projects/{project_id}/hosting")
+async def update_project_hosting(
+    project_id: int,
+    config: SiteHostingConfig,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Обновление настроек хостинга проекта"""
+    project = db.query(Project).filter(
+        Project.id == project_id,
+        Project.owner_id == current_user.id
+    ).first()
+    
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Проект не найден"
+        )
+    
+    # Проверяем уникальность поддомена, если он изменился
+    if config.subdomain != project.subdomain:
+        is_unique, message = validate_subdomain_unique(config.subdomain, db, project_id)
+        if not is_unique:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=message
+            )
+    
+    # Обновляем настройки
+    project.subdomain = config.subdomain
+    project.visibility = config.visibility
+    project.is_active = config.is_active
+    project.index_file = config.index_file
+    
+    db.commit()
+    db.refresh(project)
+    
+    return {
+        "message": "Настройки хостинга обновлены",
+        "project": project,
+        "site_url": f"http://{project.subdomain}.localhost:3000" if project.subdomain else None
+    }
+
+@app.get("/api/projects/{project_id}/hosting/files")
+async def get_site_files(
+    project_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Получение файлов сайта"""
+    project = db.query(Project).filter(
+        Project.id == project_id,
+        Project.owner_id == current_user.id
+    ).first()
+    
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Проект не найден"
+        )
+    
+    site_files = get_site_files_from_minio(current_user.unique_id, project_id)
+    return {"files": site_files}
+
+@app.get("/api/sites/{subdomain}")
+async def get_site_by_subdomain(subdomain: str, db: Session = Depends(get_db)):
+    """Получение информации о сайте по поддомену (публичный доступ)"""
+    project = db.query(Project).filter(
+        Project.subdomain == subdomain,
+        Project.is_active == True
+    ).first()
+    
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Сайт не найден или неактивен"
+        )
+    
+    # Получаем файлы сайта
+    site_files = get_site_files_from_minio(project.owner.unique_id, project.id)
+    
+    return {
+        "project": {
+            "id": project.id,
+            "title": project.title,
+            "description": project.description,
+            "subdomain": project.subdomain,
+            "visibility": project.visibility,
+            "index_file": project.index_file,
+            "owner": {
+                "nickname": project.owner.nickname,
+                "unique_id": project.owner.unique_id
+            }
+        },
+        "site_files": site_files
+    }
+
+@app.get("/api/sites/{subdomain}/{filename:path}")
+async def serve_site_file_by_subdomain(
+    subdomain: str, 
+    filename: str, 
+    db: Session = Depends(get_db)
+):
+    """Отдача файлов сайта по поддомену"""
+    project = db.query(Project).filter(
+        Project.subdomain == subdomain,
+        Project.is_active == True
+    ).first()
+    
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Сайт не найден или неактивен"
+        )
+    
+    # Если файл не указан, используем index_file
+    if not filename or filename == "":
+        filename = project.index_file
+    
+    return serve_site_file(project.owner.unique_id, project.id, filename)
+
+@app.get("/api/sites/{subdomain}/")
+async def serve_site_index_by_subdomain(
+    subdomain: str, 
+    db: Session = Depends(get_db)
+):
+    """Отдача главной страницы сайта по поддомену"""
+    project = db.query(Project).filter(
+        Project.subdomain == subdomain,
+        Project.is_active == True
+    ).first()
+    
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Сайт не найден или неактивен"
+        )
+    
+    return serve_site_file(project.owner.unique_id, project.id, project.index_file)
+
+@app.get("/api/hosting/check-subdomain/{subdomain}")
+async def check_subdomain_availability(subdomain: str, db: Session = Depends(get_db)):
+    """Проверка доступности поддомена"""
+    is_unique, message = validate_subdomain_unique(subdomain, db)
+    return {
+        "available": is_unique,
+        "message": message
+    }
 
 
 if __name__ == "__main__":

@@ -1,6 +1,12 @@
 from pydantic import BaseModel, validator
 from typing import Optional, List
 from datetime import datetime
+from enum import Enum
+
+class VisibilityType(str, Enum):
+    PRIVATE = "private"
+    PUBLIC = "public"
+    LINK_ONLY = "link_only"
 
 class UserBase(BaseModel):
     email: str
@@ -71,11 +77,63 @@ class ProjectBase(BaseModel):
     description: Optional[str] = None
 
 class ProjectCreate(ProjectBase):
-    pass
+    subdomain: Optional[str] = None
+    visibility: str = "PRIVATE"
+    is_active: bool = False
+    index_file: str = "index.html"
+    
+    @validator('subdomain')
+    def validate_subdomain(cls, v):
+        if v is not None:
+            import re
+            # Разрешаем только буквы, цифры и дефисы, длина 3-50 символов
+            pattern = r'^[a-zA-Z0-9-]{3,50}$'
+            if not re.match(pattern, v):
+                raise ValueError('Поддомен может содержать только буквы, цифры и дефисы (3-50 символов)')
+            if v.startswith('-') or v.endswith('-'):
+                raise ValueError('Поддомен не может начинаться или заканчиваться дефисом')
+        return v
+    
+    @validator('visibility')
+    def validate_visibility(cls, v):
+        if v not in ['PRIVATE', 'PUBLIC', 'LINK_ONLY']:
+            raise ValueError('Видимость должна быть PRIVATE, PUBLIC или LINK_ONLY')
+        return v
+
+class ProjectUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    subdomain: Optional[str] = None
+    visibility: Optional[str] = None
+    is_active: Optional[bool] = None
+    index_file: Optional[str] = None
+    
+    @validator('subdomain')
+    def validate_subdomain(cls, v):
+        if v is not None:
+            import re
+            # Разрешаем только буквы, цифры и дефисы, длина 3-50 символов
+            pattern = r'^[a-zA-Z0-9-]{3,50}$'
+            if not re.match(pattern, v):
+                raise ValueError('Поддомен может содержать только буквы, цифры и дефисы (3-50 символов)')
+            if v.startswith('-') or v.endswith('-'):
+                raise ValueError('Поддомен не может начинаться или заканчиваться дефисом')
+        return v
+    
+    @validator('visibility')
+    def validate_visibility(cls, v):
+        if v is not None and v not in ['PRIVATE', 'PUBLIC', 'LINK_ONLY']:
+            raise ValueError('Видимость должна быть PRIVATE, PUBLIC или LINK_ONLY')
+        return v
 
 class ProjectResponse(ProjectBase):
     id: int
     owner_id: int
+    subdomain: Optional[str] = None
+    visibility: str
+    is_active: bool
+    custom_domain: Optional[str] = None
+    index_file: str
     created_at: datetime
     
     class Config:
@@ -100,3 +158,25 @@ class Token(BaseModel):
 
 class TokenData(BaseModel):
     email: Optional[str] = None
+
+class SiteHostingConfig(BaseModel):
+    subdomain: str
+    visibility: str
+    is_active: bool
+    index_file: str = "index.html"
+    
+    @validator('subdomain')
+    def validate_subdomain(cls, v):
+        import re
+        pattern = r'^[a-zA-Z0-9-]{3,50}$'
+        if not re.match(pattern, v):
+            raise ValueError('Поддомен может содержать только буквы, цифры и дефисы (3-50 символов)')
+        if v.startswith('-') or v.endswith('-'):
+            raise ValueError('Поддомен не может начинаться или заканчиваться дефисом')
+        return v
+    
+    @validator('visibility')
+    def validate_visibility(cls, v):
+        if v not in ['PRIVATE', 'PUBLIC', 'LINK_ONLY']:
+            raise ValueError('Видимость должна быть PRIVATE, PUBLIC или LINK_ONLY')
+        return v
