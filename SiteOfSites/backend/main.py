@@ -1005,7 +1005,7 @@ async def get_project_hosting_info(
     return {
         "project": project,
         "site_files": site_files,
-        "site_url": f"http://{project.subdomain}.localhost:3000" if project.subdomain else None
+        "site_url": f"http://{project.subdomain}.siteofsites.local" if project.subdomain else None
     }
 
 @app.put("/api/projects/{project_id}/hosting")
@@ -1048,7 +1048,7 @@ async def update_project_hosting(
     return {
         "message": "Настройки хостинга обновлены",
         "project": project,
-        "site_url": f"http://{project.subdomain}.localhost:3000" if project.subdomain else None
+        "site_url": f"http://{project.subdomain}.siteofsites.local" if project.subdomain else None
     }
 
 @app.get("/api/projects/{project_id}/hosting/files")

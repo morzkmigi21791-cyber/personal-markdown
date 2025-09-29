@@ -6,7 +6,6 @@ services:
     container_name: siteofsites_nginx
     ports:
       - "80:80"
-      - "3000:3000"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
