@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import Cookies from 'js-cookie';
+import api from './api';
 import Header from './components/Header';
 import Welcome from './components/Welcome';
 import LoginModal from './components/LoginModal';
@@ -33,7 +34,7 @@ function AppContent() {
       const token = localStorage.getItem('access_token');
       if (token) {
         // Устанавливаем токен в заголовок для этого запроса
-        const response = await axios.get('/api/auth/me', {
+        const response = await api.get('/api/auth/me', {
           headers: {
             'Authorization': `Bearer ${token}`
           }
@@ -52,7 +53,7 @@ function AppContent() {
 
   const handleLogin = async (email, password) => {
     try {
-      const response = await axios.post('/api/auth/login', {
+      const response = await api.post('/api/auth/login', {
         email,
         password
       });
@@ -74,7 +75,7 @@ function AppContent() {
 
   const handleRegister = async (email, password, confirmPassword, nickname) => {
     try {
-      const response = await axios.post('/api/auth/register', {
+      const response = await api.post('/api/auth/register', {
         email,
         password,
         confirm_password: confirmPassword,

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
-import axios from 'axios';
+import api from '../api';
 import ProjectFileModal from '../components/ProjectFileModal';
 import './UserProfilePage.css';
 
@@ -11,6 +11,14 @@ const UserProfilePage = ({ user: currentUser }) => {
   const [error, setError] = useState(null);
   const [selectedProject, setSelectedProject] = useState(null);
   const [showFileModal, setShowFileModal] = useState(false);
+  const [showProjectForm, setShowProjectForm] = useState(false);
+  const [projectForm, setProjectForm] = useState({
+    title: '',
+    description: ''
+  });
+  const [projectLoading, setProjectLoading] = useState(false);
+  const [projectError, setProjectError] = useState('');
+  const [projectSuccess, setProjectSuccess] = useState('');
 
   useEffect(() => {
     fetchUserProfile();
@@ -19,12 +27,61 @@ const UserProfilePage = ({ user: currentUser }) => {
   const fetchUserProfile = async () => {
     try {
       setLoading(true);
-      const response = await axios.get(`/api/users/by-unique-id/${uniqueId}`);
+      const response = await api.get(`/api/users/by-unique-id/${uniqueId}`);
       setProfileUser(response.data);
     } catch (error) {
       setError('Пользователь не найден');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleProjectFormChange = (e) => {
+    const { name, value } = e.target;
+    setProjectForm(prev => ({
+      ...prev,
+      [name]: value
+    }));
+  };
+
+  const handleCreateProject = async (e) => {
+    e.preventDefault();
+    setProjectLoading(true);
+    setProjectError('');
+    setProjectSuccess('');
+
+    try {
+      const token = localStorage.getItem('access_token');
+      await api.post('/api/projects', projectForm, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      
+      setProjectForm({ title: '', description: '' });
+      setShowProjectForm(false);
+      await fetchUserProfile();
+      setProjectSuccess('Проект создан');
+    } catch (error) {
+      setProjectError(error.response?.data?.detail || 'Ошибка создания проекта');
+    } finally {
+      setProjectLoading(false);
+    }
+  };
+
+  const handleDeleteProject = async (projectId) => {
+    if (!window.confirm('Вы уверены, что хотите удалить этот проект?')) {
+      return;
+    }
+
+    try {
+      const token = localStorage.getItem('access_token');
+      await api.delete(`/api/projects/${projectId}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      
+      await fetchUserProfile();
+      setProjectSuccess('Проект удален');
+    } catch (error) {
+      setProjectError(error.response?.data?.detail || 'Ошибка удаления проекта');
     }
   };
 
@@ -71,22 +128,80 @@ const UserProfilePage = ({ user: currentUser }) => {
       <div className="profile-container">
         <div className="profile-header">
           <div className="profile-avatar">
-            {profileUser.nickname ? profileUser.nickname.charAt(0).toUpperCase() : 'U'}
+            {profileUser.avatar ? (
+              <img src={profileUser.avatar} alt="Аватар" />
+            ) : (
+              profileUser.nickname ? profileUser.nickname.charAt(0).toUpperCase() : 'U'
+            )}
           </div>
           <div className="profile-info">
             <h1 className="profile-name">
               {profileUser.nickname || 'Без имени'}
             </h1>
             <p className="profile-email">{profileUser.email}</p>
-            {profileUser.bio && (
-              <p className="profile-bio">{profileUser.bio}</p>
+            {profileUser.description && (
+              <p className="profile-bio">{profileUser.description}</p>
             )}
           </div>
         </div>
 
         <div className="profile-content">
           <div className="profile-section">
-            <h2>Проекты</h2>
+            <div className="projects-header">
+              <h2>Проекты</h2>
+              {isOwnProfile && (
+                <button 
+                  className="btn btn-primary"
+                  onClick={() => setShowProjectForm(!showProjectForm)}
+                >
+                  {showProjectForm ? 'Отмена' : 'Создать проект'}
+                </button>
+              )}
+            </div>
+
+            {projectError && <div className="alert alert-error">{projectError}</div>}
+            {projectSuccess && <div className="alert alert-success">{projectSuccess}</div>}
+
+            {isOwnProfile && showProjectForm && (
+              <form onSubmit={handleCreateProject} className="project-form">
+                <div className="form-group">
+                  <label>Название проекта</label>
+                  <input
+                    type="text"
+                    name="title"
+                    value={projectForm.title}
+                    onChange={handleProjectFormChange}
+                    required
+                    maxLength={100}
+                    placeholder="Введите название проекта"
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Описание</label>
+                  <textarea
+                    name="description"
+                    value={projectForm.description}
+                    onChange={handleProjectFormChange}
+                    rows={3}
+                    placeholder="Описание проекта..."
+                    maxLength={500}
+                  />
+                </div>
+                <div className="form-actions">
+                  <button 
+                    type="button" 
+                    className="btn btn-secondary"
+                    onClick={() => setShowProjectForm(false)}
+                  >
+                    Отмена
+                  </button>
+                  <button type="submit" className="btn btn-primary" disabled={projectLoading}>
+                    {projectLoading ? 'Создание...' : 'Создать проект'}
+                  </button>
+                </div>
+              </form>
+            )}
+
             {(() => {
               // Фильтруем проекты в зависимости от того, свой ли это профиль
               const visibleProjects = isOwnProfile 
@@ -101,7 +216,22 @@ const UserProfilePage = ({ user: currentUser }) => {
                       className={`project-card ${isOwnProfile ? 'clickable' : ''}`}
                       onClick={() => handleProjectClick(project)}
                     >
-                      <h3>{project.title}</h3>
+                      <div className="project-header">
+                        <h3>{project.title}</h3>
+                        {isOwnProfile && (
+                          <div className="project-actions">
+                            <button
+                              className="btn btn-danger btn-sm"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteProject(project.id);
+                              }}
+                            >
+                              Удалить
+                            </button>
+                          </div>
+                        )}
+                      </div>
                       <p>{project.description || 'Без описания'}</p>
                       <div className="project-meta">
                         <span className="project-status">
@@ -122,7 +252,7 @@ const UserProfilePage = ({ user: currentUser }) => {
                       </div>
                       {/* Кнопка для просмотра сайта */}
                       {project.subdomain && project.is_active && (
-                        <div className="project-actions">
+                        <div className="project-site-actions">
                           <a 
                             href={`http://${project.subdomain}.localhost`}
                             target="_blank"
@@ -153,7 +283,7 @@ const UserProfilePage = ({ user: currentUser }) => {
           {isOwnProfile && (
             <div className="profile-actions">
               <button 
-                className="btn btn-primary"
+                className="btn btn-secondary"
                 onClick={() => window.location.href = '/settings'}
               >
                 Настройки профиля

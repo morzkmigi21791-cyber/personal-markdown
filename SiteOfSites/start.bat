@@ -1,14 +1,88 @@
 @echo off
 chcp 65001 >nul
 echo ========================================
-echo    Site of Sites - Quick Start
+echo    Site of Sites - Universal Start
 echo ========================================
 echo.
 
-echo Checking dependencies...
+echo Choose startup mode:
+echo [1] Docker (Recommended - Full Stack)
+echo [2] Development (Local Python + Node.js)
+echo [3] Infrastructure Only (Docker MinIO + Nginx)
+echo.
+set /p choice="Enter your choice (1-3): "
+
+if "%choice%"=="1" goto docker_full
+if "%choice%"=="2" goto development
+if "%choice%"=="3" goto infrastructure
+echo Invalid choice. Exiting...
+pause
+exit /b 1
+
+:docker_full
+echo.
+echo Starting Site of Sites with Docker (Full Stack)...
 echo.
 
-echo [1/4] Checking Python...
+echo Checking Docker...
+docker --version >nul 2>&1
+if errorlevel 1 (
+    echo ERROR: Docker not found! Install Docker Desktop from https://docker.com
+    pause
+    exit /b 1
+) else (
+    echo OK: Docker found
+)
+
+echo Checking Docker Compose...
+docker-compose --version >nul 2>&1
+if errorlevel 1 (
+    echo WARNING: Docker Compose not found. Using docker compose instead...
+    set DOCKER_COMPOSE_CMD=docker compose
+) else (
+    echo OK: Docker Compose found
+    set DOCKER_COMPOSE_CMD=docker-compose
+)
+
+echo [1/3] Stopping existing containers...
+%DOCKER_COMPOSE_CMD% -f docker-compose.full.yml down >nul 2>&1
+
+echo [2/3] Building and starting services...
+%DOCKER_COMPOSE_CMD% -f docker-compose.full.yml up --build -d
+
+if errorlevel 1 (
+    echo ERROR: Failed to start services
+    pause
+    exit /b 1
+)
+
+echo [3/3] Running database migrations...
+docker exec siteofsites_backend python migrate_hosting.py 2>nul
+docker exec siteofsites_backend python fix_enum_migration.py 2>nul
+
+echo.
+echo ========================================
+echo    Docker Services Started
+echo ========================================
+echo.
+echo Main Site:    http://localhost
+echo Frontend:     http://localhost:3000
+echo Backend API:  http://localhost:8000
+echo API Docs:     http://localhost:8000/docs
+echo MinIO Console: http://localhost:9001
+echo.
+echo MinIO Login: Qwerty / 19216811!
+echo.
+echo To stop: run stop.bat
+echo.
+goto end
+
+:development
+echo.
+echo Starting Site of Sites in Development Mode...
+echo.
+
+echo [1/5] Checking Python...
 python --version >nul 2>&1
 if errorlevel 1 (
     echo ERROR: Python not found! Install Python 3.8+ from https://python.org
@@ -18,7 +92,7 @@ if errorlevel 1 (
     echo OK: Python found
 )
 
-echo [2/4] Checking Node.js...
+echo [2/5] Checking Node.js...
 node --version >nul 2>&1
 if errorlevel 1 (
     echo ERROR: Node.js not found! Install Node.js from https://nodejs.org
@@ -28,9 +102,9 @@ if errorlevel 1 (
     echo OK: Node.js found
 )
 
-echo [3/4] Checking Backend dependencies...
+echo [3/5] Checking Backend dependencies...
 if not exist "backend\venv" (
-    echo WARNING: Virtual environment not found. Creating...
+    echo Creating virtual environment...
     cd backend
     python -m venv venv
     call venv\Scripts\activate
@@ -43,7 +117,7 @@ if not exist "backend\venv" (
 
 echo [4/5] Checking Frontend dependencies...
 if not exist "frontend\node_modules" (
-    echo WARNING: Frontend dependencies not found. Installing...
+    echo Installing frontend dependencies...
     cd frontend
     npm install
     cd ..
@@ -52,31 +126,14 @@ if not exist "frontend\node_modules" (
     echo OK: Frontend dependencies found
 )
 
-echo [5/6] Checking Docker...
-docker --version >nul 2>&1
-if errorlevel 1 (
-    echo ERROR: Docker not found! Install Docker Desktop from https://docker.com
-    pause
-    exit /b 1
-) else (
-    echo OK: Docker found
-)
-
-echo [6/6] Checking Docker Compose...
+echo [5/5] Starting Docker infrastructure...
 docker-compose --version >nul 2>&1
 if errorlevel 1 (
-    echo WARNING: Docker Compose not found. Using docker compose instead...
     set DOCKER_COMPOSE_CMD=docker compose
 ) else (
-    echo OK: Docker Compose found
     set DOCKER_COMPOSE_CMD=docker-compose
 )
 
-echo.
-echo Starting servers...
-echo.
-
-echo [1/4] Starting Docker services (MinIO + Nginx)...
 %DOCKER_COMPOSE_CMD% down >nul 2>&1
 %DOCKER_COMPOSE_CMD% up -d
 if errorlevel 1 (
@@ -86,66 +143,86 @@ if errorlevel 1 (
     timeout /t 5 /nobreak >nul
 )
 
-echo [2/4] Running database migration...
+echo Running database migration...
 cd backend
 call venv\Scripts\activate
-python migrate_hosting.py
-if errorlevel 1 (
-    echo WARNING: Database migration failed, continuing anyway
-) else (
-    echo OK: Database migration completed
-)
-
-echo [2.5/4] Fixing enum values...
-python fix_enum_migration.py
-if errorlevel 1 (
-    echo WARNING: Enum fix failed, continuing anyway
-) else (
-    echo OK: Enum values fixed
-)
+python migrate_hosting.py 2>nul
+python fix_enum_migration.py 2>nul
 cd ..
 
-echo [3/4] Starting Backend server...
+echo Starting Backend server...
 start "Site of Sites - Backend" cmd /k "cd backend && call venv\Scripts\activate && python run.py"
 
 timeout /t 3 /nobreak >nul
 
-echo [4/4] Starting Frontend server...
+echo Starting Frontend server...
 start "Site of Sites - Frontend" cmd /k "cd frontend && npm start"
 
-timeout /t 3 /nobreak >nul
+echo.
+echo ========================================
+echo    Development Services Started
+echo ========================================
+echo.
+echo Frontend:     http://localhost:3000
+echo Backend API:  http://localhost:8000
+echo API Docs:     http://localhost:8000/docs
+echo Main Site:    http://localhost
+echo MinIO Console: http://localhost:9001
+echo.
+echo MinIO Login: Qwerty / 19216811!
+echo.
+echo To stop: run stop.bat
+echo.
+goto end
 
-echo [5/5] All services started successfully!
+:infrastructure
+echo.
+echo Starting Infrastructure Only (MinIO + Nginx)...
+echo.
+
+echo Checking Docker...
+docker --version >nul 2>&1
+if errorlevel 1 (
+    echo ERROR: Docker not found! Install Docker Desktop from https://docker.com
+    pause
+    exit /b 1
+) else (
+    echo OK: Docker found
+)
+
+echo Checking Docker Compose...
+docker-compose --version >nul 2>&1
+if errorlevel 1 (
+    set DOCKER_COMPOSE_CMD=docker compose
+) else (
+    set DOCKER_COMPOSE_CMD=docker-compose
+)
+
+echo Starting infrastructure services...
+%DOCKER_COMPOSE_CMD% down >nul 2>&1
+%DOCKER_COMPOSE_CMD% up -d
+
+if errorlevel 1 (
+    echo ERROR: Failed to start infrastructure services
+    pause
+    exit /b 1
+)
+
 echo.
 echo ========================================
-echo    Service Information
+echo    Infrastructure Services Started
 echo ========================================
 echo.
-echo Main Services:
-echo    Frontend:     http://localhost:3000
-echo    Backend API:  http://localhost:8000
-echo    API Docs:     http://localhost:8000/docs
+echo Nginx:        http://localhost (port 80)
+echo MinIO API:    http://localhost:9000
+echo MinIO Console: http://localhost:9001
 echo.
-echo Docker Services:
-echo    Nginx:        http://localhost (port 80)
-echo    MinIO API:    http://localhost:9000
-echo    MinIO Console: http://localhost:9001
+echo MinIO Login: Qwerty / 19216811!
 echo.
-echo Site Hosting:
-echo    Main Site:    http://localhost
-echo    Subdomains:   http://SUBDOMAIN.localhost
-echo    Example:      http://mysite.localhost
+echo To stop: run stop.bat
 echo.
-echo MinIO Access:
-echo    Login: Qwerty
-echo    Password: 19216811!
-echo.
-echo Management:
-echo    - To stop all services: run stop.bat
-echo    - To stop Docker only: docker-compose down
-echo    - Server logs are displayed in separate windows
-echo.
-echo ========================================
-echo.
+goto end
+
+:end
 echo Press any key to close this window...
 pause >nul

@@ -229,7 +229,11 @@ def serve_site_file(user_unique_id: str, project_id: int, filename: str):
             response,
             media_type=media_type,
             headers={
-                "Cache-Control": "public, max-age=3600"
+                "Cache-Control": "public, max-age=7200, immutable",
+                "ETag": f'"{hash(full_filename)}"',
+                "Last-Modified": response.headers.get("Last-Modified", ""),
+                "X-Content-Type-Options": "nosniff",
+                "X-Frame-Options": "SAMEORIGIN"
             }
         )
         
