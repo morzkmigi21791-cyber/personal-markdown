@@ -17,7 +17,11 @@ class User(Base):
     nickname = Column(String(20), index=True, nullable=False)
     email = Column(String(100), index=True, unique=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
-    avatar = Column(Text, nullable=True)  # Будем хранить base64 изображение
+    avatar = Column(Text, nullable=True)
+    profile_cover = Column(Text, nullable=True)  # Обложка профиля (верхняя часть)
+    page_background = Column(Text, nullable=True)  # Общий фон страницы
+    projects_background = Column(Text, nullable=True)  # Фон области проектов
+    card_color = Column(String(20), default="#ffffff", nullable=True)  # Цвет карточек проектов
     description = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
@@ -42,3 +46,29 @@ class Project(Base):
     
     # Связь с пользователем
     owner = relationship("User", back_populates="projects")
+    # Связь с визитами
+    visits = relationship("ProjectVisit", back_populates="project", cascade="all, delete-orphan")
+
+class ProjectVisit(Base):
+    __tablename__ = "project_visits"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)
+    timestamp = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    country_code = Column(String(20), nullable=True, default="Неизвестно") # Код страны (RU, US и т.д.)
+    source_type = Column(String(20), default="direct") # 'direct', 'profile', 'external'
+    visitor_hash = Column(String(64), index=True, nullable=True) # Хеш для защиты от накрутки
+    
+    project = relationship("Project", back_populates="visits")
+
+class ChatHistory(Base):
+    __tablename__ = "chat_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True) # Nullable для анонимов (если нужно)
+    session_id = Column(String(100), index=True, nullable=True) # Для гостей
+    sender = Column(String(10), nullable=False) # 'user' или 'bot'
+    message = Column(Text, nullable=False)
+    timestamp = Column(DateTime(timezone=True), server_default=func.now())
+    
+    user = relationship("User")

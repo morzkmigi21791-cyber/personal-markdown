@@ -214,6 +214,8 @@ const ProjectFileModal = ({ project, isOpen, onClose, onUpdate }) => {
               <button 
                 className="hosting-btn"
                 onClick={() => {
+                  if (files.length === 0) return;
+                  
                   const token = localStorage.getItem('access_token');
                   if (!token) {
                     alert('Ошибка авторизации. Пожалуйста, войдите в систему заново.');
@@ -221,7 +223,8 @@ const ProjectFileModal = ({ project, isOpen, onClose, onUpdate }) => {
                   }
                   setShowHostingModal(true);
                 }}
-                title="Настройки хостинга"
+                title={files.length === 0 ? "Сначала загрузите файлы" : "Настройки хостинга"}
+                disabled={files.length === 0}
               >
                 🌐 Хостинг
               </button>

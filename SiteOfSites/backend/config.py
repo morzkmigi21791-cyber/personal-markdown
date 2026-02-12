@@ -18,7 +18,7 @@ DATABASE_URL = f"postgresql://{DB_USER}:{quote_plus(DB_PASSWORD)}@{DB_HOST}:{DB_
 # JWT настройки
 SECRET_KEY = os.getenv("SECRET_KEY", "@37!34Hif77+UIfgE22&&1#eee2EC1#$")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+ACCESS_TOKEN_EXPIRE_MINUTES = 10080
 
 # CORS настройки
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
@@ -39,3 +39,7 @@ ALLOWED_MIME_TYPES = {
 
 # Максимальный размер файла (10MB)
 MAX_FILE_SIZE = 10 * 1024 * 1024
+
+# Настройки домена сайта
+DOMAIN = os.getenv("DOMAIN", "localhost")
+SITE_PROTOCOL = os.getenv("SITE_PROTOCOL", "http")

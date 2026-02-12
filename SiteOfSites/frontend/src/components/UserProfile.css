@@ -76,11 +76,11 @@
 }
 
 .profile-avatar img {
-  width: 80px;
-  height: 80px;
+  width: 100%;
+  height: 100%;
   border-radius: 50%;
   object-fit: cover;
-  border: 3px solid #e1e5e9;
+  border: none;
 }
 
 .default-avatar {
@@ -264,8 +264,11 @@
 /* Адаптивность */
 @media (max-width: 768px) {
   .profile-modal {
-    margin: 10px;
-    max-height: 95vh;
+    width: 100%;
+    height: 100%;
+    max-height: 100vh;
+    border-radius: 0;
+    margin: 0;
   }
   
   .profile-header {
@@ -308,6 +311,12 @@
   .project-item {
     padding: 12px;
   }
+
+  /* Landscape for modal */
+  @media (orientation: landscape) {
+    .profile-main-info {
+      flex-direction: row;
+      text-align: left;
+    }
+  }
 }
-
-

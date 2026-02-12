@@ -42,8 +42,9 @@ const ProfileDropdown = ({ user, onLogout, onProfileClick, onSettingsClick }) =>
         className="profile-button"
         onClick={() => setIsOpen(!isOpen)}
         title={user.nickname || user.email}
+        style={user.avatar ? { backgroundImage: `url(${user.avatar})` } : {}}
       >
-        {getInitials(user.nickname)}
+        {!user.avatar && getInitials(user.nickname)}
       </button>
       
       {isOpen && (
@@ -64,4 +65,3 @@ const ProfileDropdown = ({ user, onLogout, onProfileClick, onSettingsClick }) =>
 };
 
 export default ProfileDropdown;
-

@@ -57,8 +57,7 @@ if errorlevel 1 (
 )
 
 echo [3/3] Running database migrations...
-docker exec siteofsites_backend python migrate_hosting.py 2>nul
-docker exec siteofsites_backend python fix_enum_migration.py 2>nul
+docker exec siteofsites_backend python init_db.py
 
 echo.
 echo ========================================
@@ -108,7 +107,9 @@ if not exist "backend\venv" (
     cd backend
     python -m venv venv
     call venv\Scripts\activate
+    echo Installing dependencies...
     pip install -r requirements.txt
+    pip install httpx
     cd ..
     echo OK: Virtual environment created
 ) else (
@@ -146,6 +147,8 @@ if errorlevel 1 (
 echo Running database migration...
 cd backend
 call venv\Scripts\activate
+echo Installing missing dependencies (httpx)...
+pip install httpx >nul 2>&1
 python migrate_hosting.py 2>nul
 python fix_enum_migration.py 2>nul
 cd ..
@@ -153,10 +156,13 @@ cd ..
 echo Starting Backend server...
 start "Site of Sites - Backend" cmd /k "cd backend && call venv\Scripts\activate && python run.py"
 
+echo Starting AI Bot server...
+start "Site of Sites - AI Bot" cmd /k "cd robot && call run_bot.bat"
+
 timeout /t 3 /nobreak >nul
 
 echo Starting Frontend server...
-start "Site of Sites - Frontend" cmd /k "cd frontend && npm start"
+start "Site of Sites - Frontend" cmd /k "cd frontend && set DANGEROUSLY_DISABLE_HOST_CHECK=true && npm start"
 
 echo.
 echo ========================================

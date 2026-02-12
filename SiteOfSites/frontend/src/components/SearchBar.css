@@ -15,17 +15,18 @@
   width: 100%;
   padding: 12px 16px;
   padding-right: 40px;
-  border: 2px solid #e1e5e9;
+  border: 2px solid transparent;
   border-radius: 25px;
   font-size: 16px;
   outline: none;
   transition: all 0.3s ease;
-  background: white;
+  background-image: linear-gradient(white, white), linear-gradient(135deg, #f6d365 0%, #fda085 100%);
+  background-origin: border-box;
+  background-clip: padding-box, border-box;
 }
 
 .search-input:focus {
-  border-color: #007bff;
-  box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.1);
+  box-shadow: 0 0 0 3px rgba(253, 160, 133, 0.3);
 }
 
 .search-loading {
@@ -157,5 +158,3 @@
     font-size: 12px;
   }
 }
-
-

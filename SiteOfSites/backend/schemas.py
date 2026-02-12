@@ -1,5 +1,5 @@
 from pydantic import BaseModel, validator
-from typing import Optional, List
+from typing import Optional, List, Dict
 from datetime import datetime
 from enum import Enum
 
@@ -52,8 +52,13 @@ class UserResponse(UserBase):
     id: int
     unique_id: str
     avatar: Optional[str] = None
+    profile_cover: Optional[str] = None
+    page_background: Optional[str] = None
+    projects_background: Optional[str] = None
+    card_color: Optional[str] = None
     description: Optional[str] = None
     created_at: datetime
+    updated_at: Optional[datetime] = None
     
     class Config:
         from_attributes = True
@@ -62,6 +67,10 @@ class UserProfileUpdate(BaseModel):
     nickname: Optional[str] = None
     description: Optional[str] = None
     avatar: Optional[str] = None
+    profile_cover: Optional[str] = None
+    page_background: Optional[str] = None
+    projects_background: Optional[str] = None
+    card_color: Optional[str] = None
     
     @validator('nickname')
     def validate_nickname(cls, v):
@@ -75,6 +84,12 @@ class UserProfileUpdate(BaseModel):
 class ProjectBase(BaseModel):
     title: str
     description: Optional[str] = None
+    
+    @validator('title')
+    def validate_title(cls, v):
+        if len(v) > 30:
+            raise ValueError('Название проекта не должно превышать 30 символов')
+        return v
 
 class ProjectCreate(ProjectBase):
     subdomain: Optional[str] = None
@@ -100,6 +115,20 @@ class ProjectCreate(ProjectBase):
             raise ValueError('Видимость должна быть PRIVATE, PUBLIC или LINK_ONLY')
         return v
 
+class ProjectStats(BaseModel):
+    total_visits: int
+    visits_today: int
+    visits_week: int
+    visits_month: int
+    countries: Dict[str, int]
+    sources: Dict[str, int]
+
+class ProjectStatsSummary(BaseModel):
+    project_id: int
+    project_title: str
+    total_visits: int
+    visits_today: int
+
 class ProjectUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
@@ -107,6 +136,7 @@ class ProjectUpdate(BaseModel):
     visibility: Optional[str] = None
     is_active: Optional[bool] = None
     index_file: Optional[str] = None
+    custom_domain: Optional[str] = None
     
     @validator('subdomain')
     def validate_subdomain(cls, v):
@@ -135,6 +165,7 @@ class ProjectResponse(ProjectBase):
     custom_domain: Optional[str] = None
     index_file: str
     created_at: datetime
+    updated_at: Optional[datetime] = None
     
     class Config:
         from_attributes = True
@@ -180,3 +211,16 @@ class SiteHostingConfig(BaseModel):
         if v not in ['PRIVATE', 'PUBLIC', 'LINK_ONLY']:
             raise ValueError('Видимость должна быть PRIVATE, PUBLIC или LINK_ONLY')
         return v
+
+class ChatMessageCreate(BaseModel):
+    message: str
+    session_id: Optional[str] = None
+
+class ChatMessageResponse(BaseModel):
+    id: int
+    sender: str
+    message: str
+    timestamp: datetime
+    
+    class Config:
+        from_attributes = True

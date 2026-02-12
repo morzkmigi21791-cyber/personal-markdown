@@ -10,7 +10,8 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background-color: #f5f5f5;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  min-height: 100vh;
 }
 
 code {
@@ -35,12 +36,18 @@ code {
 .modal-content {
   background: white;
   padding: 2rem;
-  border-radius: 8px;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-  max-width: 400px;
+  border-radius: 12px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+  max-width: 450px;
   width: 90%;
   max-height: 90vh;
   overflow-y: auto;
+  animation: modalFadeIn 0.3s ease-out;
+}
+
+@keyframes modalFadeIn {
+  from { opacity: 0; transform: translateY(-20px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .modal-header {
@@ -80,6 +87,7 @@ code {
   border: 1px solid #ddd;
   border-radius: 4px;
   font-size: 1rem;
+  transition: border-color 0.2s, box-shadow 0.2s;
 }
 
 .form-group input:focus {
@@ -101,16 +109,22 @@ code {
   border-radius: 4px;
   font-size: 1rem;
   cursor: pointer;
-  transition: background-color 0.2s;
+  transition: all 0.2s;
+  font-weight: 500;
+}
+
+.btn:active {
+  transform: translateY(1px);
 }
 
 .btn-primary {
-  background-color: #007bff;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   color: white;
 }
 
 .btn-primary:hover {
-  background-color: #0056b3;
+  background: linear-gradient(135deg, #764ba2 0%, #667eea 100%);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
 }
 
 .btn-secondary {
@@ -152,14 +166,24 @@ code {
   width: 40px;
   height: 40px;
   border-radius: 50%;
-  background-color: #007bff;
+  background-color: transparent;
   color: white;
-  border: none;
+  border: 2px solid #fda085;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   font-weight: bold;
+  padding: 0;
+  overflow: hidden;
+  background-size: cover;
+  background-position: center;
+}
+
+.profile-button img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .profile-menu {
@@ -200,3 +224,31 @@ code {
   border-bottom-right-radius: 4px;
 }
 
+/* Адаптивность для глобальных элементов */
+@media (max-width: 768px) {
+  .modal-content {
+    width: 95%;
+    padding: 1.5rem;
+    margin: 10px;
+  }
+
+  .profile-dropdown {
+    width: 100%;
+    display: flex;
+    justify-content: center;
+  }
+
+  .profile-menu {
+    position: absolute;
+    top: 50px; /* Сдвигаем меню чуть ниже кнопки */
+    right: 50%;
+    transform: translateX(50%); /* Центрируем относительно экрана */
+    width: 200px;
+    text-align: center;
+  }
+  
+  .profile-menu-item {
+    text-align: center;
+    padding: 12px;
+  }
+}

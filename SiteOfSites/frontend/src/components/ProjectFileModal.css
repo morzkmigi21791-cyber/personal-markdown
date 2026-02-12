@@ -217,6 +217,13 @@
   box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
 }
 
+.hosting-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background: #9ca3af;
+  box-shadow: none;
+}
+
 .file-stats {
   color: #6b7280;
   font-size: 14px;

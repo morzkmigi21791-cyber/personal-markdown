@@ -1,19 +1,24 @@
-import React from 'react';
+import React, { useState } from 'react';
 import ProfileDropdown from './ProfileDropdown';
 import SearchBar from './SearchBar';
 
 const Header = ({ user, onLoginClick, onRegisterClick, onLogout, onProfileClick, onSettingsClick, onUserSelect }) => {
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+
   return (
     <header className="header">
       <div className="header-left">
         <a href="/" className="logo">Site of Sites</a>
+        <button className="mobile-menu-toggle" onClick={() => setIsMenuOpen(!isMenuOpen)}>
+          {isMenuOpen ? '✕' : '☰'}
+        </button>
       </div>
       
-      <div className="header-center">
+      <div className={`header-center ${isMenuOpen ? 'active' : ''}`}>
         <SearchBar onUserSelect={onUserSelect} />
       </div>
       
-      <div className="header-right">
+      <div className={`header-right ${isMenuOpen ? 'active' : ''}`}>
         {user ? (
           <ProfileDropdown 
             user={user} 
@@ -37,4 +42,3 @@ const Header = ({ user, onLoginClick, onRegisterClick, onLogout, onProfileClick,
 };
 
 export default Header;
-

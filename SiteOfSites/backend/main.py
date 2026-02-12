@@ -1,26 +1,38 @@
-from fastapi import FastAPI, HTTPException, Depends, Response, status, Request, UploadFile, File
+from fastapi import FastAPI, HTTPException, Depends, Response, status, Request, UploadFile, File, Cookie
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
-from datetime import timedelta
+from sqlalchemy import func
+from datetime import timedelta, datetime
 from typing import List, Optional
 import re
 import string
 import random
+import logging
+import hashlib
+import httpx
 
 from starlette.responses import StreamingResponse
+
+try:
+    import geoip2.database
+except ImportError:
+    geoip2 = None
+    print("Warning: geoip2 module not found. Country detection will be disabled.")
 
 from s3 import minio_client, BUCKET_NAME
 import io
 import os
-from config import ALLOWED_FILE_EXTENSIONS, ALLOWED_MIME_TYPES, MAX_FILE_SIZE
+from config import ALLOWED_FILE_EXTENSIONS, ALLOWED_MIME_TYPES, MAX_FILE_SIZE, DOMAIN, SITE_PROTOCOL, ACCESS_TOKEN_EXPIRE_MINUTES
 
 
 from database import SessionLocal, engine
-from models import Base, User, Project
+from models import Base, User, Project, ProjectVisit, ChatHistory
 from schemas import (
     UserCreate, UserLogin, UserResponse, UserProfileUpdate, 
     ProjectCreate, ProjectUpdate, ProjectResponse,
-    UserWithProjects, UserSearchResult, Token, SiteHostingConfig
+    UserWithProjects, UserSearchResult, Token, SiteHostingConfig,
+    ProjectStats, ProjectStatsSummary, ChatMessageCreate, ChatMessageResponse
 )
 from security import hash_password, verify_password, create_access_token, verify_token
 from config import ALLOWED_ORIGINS
@@ -39,6 +51,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Настройка OAuth2 для Swagger UI (и извлечения токена из заголовка)
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
+
+# URL AI сервиса (из переменной окружения или дефолт)
+AI_SERVICE_URL = os.getenv("AI_SERVICE_URL", "http://localhost:8001")
+
 # Dependency для получения сессии БД
 def get_db():
     db = SessionLocal()
@@ -48,29 +66,25 @@ def get_db():
         db.close()
 
 # Dependency для получения текущего пользователя
-def get_current_user(
-    request: Request,
+async def get_current_user(
+    token: Optional[str] = Depends(oauth2_scheme),
+    access_token: Optional[str] = Cookie(None),
     db: Session = Depends(get_db)
 ):
-    # Получение токена из заголовка Authorization
-    auth_header = request.headers.get("Authorization")
-    if not auth_header or not auth_header.startswith("Bearer "):
+    # Проверяем токен в заголовке (Bearer), если нет - в куках
+    if not token:
+        token = access_token
+    
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Токен не предоставлен",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
-    token = auth_header.split(" ")[1]
+
     try:
         payload = verify_token(token)
         email: str = payload.get("sub")
-        if email is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Недействительный токен",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -78,7 +92,6 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    from models import User
     user = db.query(User).filter(User.email == email).first()
     if user is None:
         raise HTTPException(
@@ -86,6 +99,27 @@ def get_current_user(
             detail="Пользователь не найден",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    return user
+
+# Dependency для получения текущего пользователя (опционально)
+async def get_optional_current_user(
+    token: Optional[str] = Depends(oauth2_scheme),
+    access_token: Optional[str] = Cookie(None),
+    db: Session = Depends(get_db)
+):
+    if not token:
+        token = access_token
+    
+    if not token:
+        return None
+
+    try:
+        payload = verify_token(token)
+        email: str = payload.get("sub")
+    except Exception:
+        return None
+    
+    user = db.query(User).filter(User.email == email).first()
     return user
 
 # Валидация email
@@ -179,9 +213,10 @@ def get_site_files_from_minio(user_unique_id: str, project_id: int):
         
         site_files = []
         for obj in objects:
-            # Пропускаем файлы из папки images и служебные файлы
-            if not obj.object_name.startswith(f"{user_unique_id}/{project_id}/images/") and not obj.object_name.endswith('.gitkeep'):
-                relative_path = obj.object_name.replace(f"{user_unique_id}/{project_id}/", "")
+            # Пропускаем только служебные файлы
+            if not obj.object_name.endswith('.gitkeep'):
+                prefix = f"{user_unique_id}/{project_id}/"
+                relative_path = obj.object_name[len(prefix):] if obj.object_name.startswith(prefix) else obj.object_name
                 site_files.append({
                     "filename": relative_path,
                     "size": obj.size,
@@ -225,27 +260,139 @@ def serve_site_file(user_unique_id: str, project_id: int, filename: str):
         }
         media_type = mime_type_map.get(file_extension, 'application/octet-stream')
         
+        # Создаем генератор для стриминга с правильным закрытием соединения
+        def iterfile():
+            try:
+                for chunk in response.stream(1024 * 1024):  # Читаем по 1MB
+                    yield chunk
+            finally:
+                response.close()
+                response.release_conn()
+
+        # Получаем ETag из заголовков MinIO. Не генерируем случайный, чтобы избежать циклов обновления.
+        etag = response.headers.get("ETag")
+        
+        headers = {
+            "Cache-Control": "no-cache, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            "Last-Modified": response.headers.get("Last-Modified", ""),
+            "X-Content-Type-Options": "nosniff",
+            "X-Frame-Options": "SAMEORIGIN"
+        }
+        if etag:
+            headers["ETag"] = etag
+
         return StreamingResponse(
-            response,
+            iterfile(),
             media_type=media_type,
-            headers={
-                "Cache-Control": "public, max-age=7200, immutable",
-                "ETag": f'"{hash(full_filename)}"',
-                "Last-Modified": response.headers.get("Last-Modified", ""),
-                "X-Content-Type-Options": "nosniff",
-                "X-Frame-Options": "SAMEORIGIN"
-            }
+            headers=headers
         )
         
     except Exception as e:
+        logging.error(f"Ошибка отдачи файла {filename}: {e}")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Файл не найден: {str(e)}"
+            detail=f"Ошибка отдачи файла: {str(e)}"
         )
+
+# Вспомогательная функция для записи статистики
+def record_project_visit(project: Project, request: Request, db: Session):
+    """Записывает визит, если проект публичный или доступен по ссылке"""
+    # Если проект приватный - статистику не пишем (заморожена)
+    if project.visibility == "PRIVATE":
+        return
+
+    try:
+        # Определение источника перехода
+        referer = request.headers.get("referer", "")
+        source_type = "direct"
+        
+        # Проверяем, пришел ли пользователь со страницы профиля нашего сайта
+        # Предполагаем, что DOMAIN содержится в config.py
+        if DOMAIN in referer and "/profile/" in referer:
+            source_type = "profile"
+        elif referer:
+            source_type = "external"
+            
+        # Определение страны
+        country = "Неизвестно"
+        
+        # Получаем IP адрес клиента
+        client_ip = "127.0.0.1"
+        if request.client:
+            client_ip = request.client.host
+            
+        if "x-forwarded-for" in request.headers:
+            client_ip = request.headers["x-forwarded-for"].split(",")[0].strip()
+            
+        # ЛОГИРОВАНИЕ: Проверяем, какой IP видит сервер
+        logging.info(f"DEBUG STATS: Client IP={client_ip}, X-Forwarded-For={request.headers.get('x-forwarded-for')}")
+
+        # Защита от накрутки (фарма посещений)
+        user_agent = request.headers.get("user-agent", "")
+        # Создаем уникальный хеш посетителя на основе IP и User-Agent
+        visitor_hash = hashlib.sha256(f"{client_ip}{user_agent}".encode()).hexdigest()
+        
+        # Проверяем, был ли этот посетитель на этом проекте за последние 24 часа
+        recent_visit = db.query(ProjectVisit).filter(
+            ProjectVisit.project_id == project.id,
+            ProjectVisit.visitor_hash == visitor_hash,
+            ProjectVisit.timestamp >= datetime.utcnow() - timedelta(hours=24)
+        ).first()
+        
+        if recent_visit:
+            return # Не засчитываем повторное посещение
+            
+        # Используем GeoIP2 для определения страны
+        geoip_db_path = "GeoLite2-Country.mmdb"
+        if geoip2 and os.path.exists(geoip_db_path):
+            try:
+                with geoip2.database.Reader(geoip_db_path) as reader:
+                    response = reader.country(client_ip)
+                    if response.country.iso_code:
+                        country = response.country.iso_code
+            except Exception as e:
+                logging.error(f"GeoIP lookup error for {client_ip}: {e}")
+                pass
+        else:
+            if not geoip2:
+                logging.warning("GeoIP WARNING: Библиотека geoip2 не установлена или не импортирована.")
+            if not os.path.exists(geoip_db_path):
+                logging.warning(f"GeoIP WARNING: Файл базы данных не найден по пути: {os.path.abspath(geoip_db_path)}")
+        
+        # Fallback на Cloudflare
+        if country == "Неизвестно":
+            country = request.headers.get("CF-IPCountry", "Неизвестно")
+        
+        # Создаем запись
+        visit = ProjectVisit(
+            project_id=project.id,
+            country_code=country,
+            source_type=source_type,
+            visitor_hash=visitor_hash
+        )
+        db.add(visit)
+        db.commit()
+    except Exception as e:
+        # Ошибки статистики не должны ломать отдачу сайта
+        logging.error(f"Ошибка записи статистики: {e}")
+        # В случае ошибки отката нет, так как мы в отдельной транзакции или 
+        # просто игнорируем, чтобы не блокировать основной поток, 
+        # но здесь db сессия общая, поэтому лучше сделать rollback при ошибке
+        db.rollback()
 
 @app.get("/")
 async def root():
     return {"message": "Site of Sites API"}
+
+@app.get("/api/config")
+async def get_config():
+    """Возвращает публичную конфигурацию сервера"""
+    return {
+        "domain": DOMAIN,
+        "protocol": SITE_PROTOCOL
+    }
 
 @app.post("/api/auth/register", response_model=Token)
 async def register(user: UserCreate, db: Session = Depends(get_db)):
@@ -282,7 +429,7 @@ async def register(user: UserCreate, db: Session = Depends(get_db)):
     db.refresh(db_user)
     
     # Создаем токен
-    access_token_expires = timedelta(minutes=30)
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": db_user.email}, expires_delta=access_token_expires
     )
@@ -307,7 +454,7 @@ async def login(user: UserLogin, response: Response, db: Session = Depends(get_d
         )
     
     # Создаем токен
-    access_token_expires = timedelta(minutes=30)
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": db_user.email}, expires_delta=access_token_expires
     )
@@ -319,7 +466,7 @@ async def login(user: UserLogin, response: Response, db: Session = Depends(get_d
         httponly=True,
         secure=False,
         samesite="lax",
-        max_age=1800
+        max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60
     )
     
     return {
@@ -403,6 +550,14 @@ async def update_profile(
         current_user.description = profile_data.description
     if profile_data.avatar is not None:
         current_user.avatar = profile_data.avatar
+    if profile_data.profile_cover is not None:
+        current_user.profile_cover = profile_data.profile_cover
+    if profile_data.page_background is not None:
+        current_user.page_background = profile_data.page_background
+    if profile_data.projects_background is not None:
+        current_user.projects_background = profile_data.projects_background
+    if profile_data.card_color is not None:
+        current_user.card_color = profile_data.card_color
     
     db.commit()
     db.refresh(current_user)
@@ -445,10 +600,12 @@ async def create_project(
 
 @app.get("/api/projects", response_model=List[ProjectResponse])
 async def get_user_projects(
+    response: Response,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Получение проектов текущего пользователя"""
+    response.headers["Cache-Control"] = "no-cache"
     projects = db.query(Project).filter(Project.owner_id == current_user.id).all()
     return projects
 
@@ -617,8 +774,17 @@ async def download_file(
         }
         media_type = mime_type_map.get(file_extension, 'application/octet-stream')
         
+        # Для скачивания тоже лучше использовать безопасный стриминг
+        def iterfile():
+            try:
+                for chunk in response.stream(1024 * 1024):
+                    yield chunk
+            finally:
+                response.close()
+                response.release_conn()
+
         return StreamingResponse(
-            response,
+            iterfile(),
             media_type=media_type,
             headers={
                 "Content-Disposition": f"attachment; filename={os.path.basename(filename)}",
@@ -771,6 +937,10 @@ async def upload_project_file(
             content_type=file.content_type or "application/octet-stream"
         )
         
+        # Отключаем хостинг при изменении файлов, чтобы гарантировать обновление контента
+        project.is_active = False
+        db.commit()
+        
         return {
             "message": f"Файл {file.filename} успешно загружен в папку {folder}",
             "filename": unique_filename,
@@ -790,10 +960,12 @@ async def upload_project_file(
 @app.get("/api/projects/{project_id}/files")
 async def get_project_files(
     project_id: int,
+    response: Response,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Получение списка файлов проекта (только автор)"""
+    response.headers["Cache-Control"] = "no-cache"
     if not minio_client:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -828,12 +1000,13 @@ async def get_project_files(
             if obj.object_name.endswith('.gitkeep'):
                 continue
                 
-            relative_path = obj.object_name.replace(f"{current_user.unique_id}/{project_id}/", "")
+            prefix = f"{current_user.unique_id}/{project_id}/"
+            relative_path = obj.object_name[len(prefix):] if obj.object_name.startswith(prefix) else obj.object_name
             
             # Если файл в папке images, добавляем его в папку
             if relative_path.startswith("images/"):
                 folder_name = "images"
-                file_name = relative_path.replace("images/", "")
+                file_name = relative_path[7:] # len("images/") == 7
             else:
                 folder_name = "root"
                 file_name = relative_path
@@ -855,6 +1028,7 @@ async def get_project_files(
         }
         
     except Exception as e:
+        logging.error(f"Error getting project files: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка получения файлов проекта: {str(e)}"
@@ -917,8 +1091,16 @@ async def download_project_file(
         }
         media_type = mime_type_map.get(file_extension, 'application/octet-stream')
         
+        def iterfile():
+            try:
+                for chunk in response.stream(1024 * 1024):
+                    yield chunk
+            finally:
+                response.close()
+                response.release_conn()
+
         return StreamingResponse(
-            response,
+            iterfile(),
             media_type=media_type,
             headers={
                 "Content-Disposition": f"attachment; filename={filename}",
@@ -976,6 +1158,10 @@ async def delete_project_file(
         # Удаляем файл из MinIO
         minio_client.remove_object(BUCKET_NAME, full_filename)
         
+        # Отключаем хостинг при удалении файлов
+        project.is_active = False
+        db.commit()
+        
         return {"message": f"Файл {filename} успешно удален из папки {folder}"}
         
     except Exception as e:
@@ -988,10 +1174,12 @@ async def delete_project_file(
 @app.get("/api/projects/{project_id}/hosting")
 async def get_project_hosting_info(
     project_id: int,
+    response: Response,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Получение информации о хостинге проекта"""
+    response.headers["Cache-Control"] = "no-cache"
     project = db.query(Project).filter(
         Project.id == project_id,
         Project.owner_id == current_user.id
@@ -1009,7 +1197,7 @@ async def get_project_hosting_info(
     return {
         "project": project,
         "site_files": site_files,
-        "site_url": f"http://{project.subdomain}.siteofsites.local" if project.subdomain else None
+        "site_url": f"{SITE_PROTOCOL}://{project.subdomain}.{DOMAIN}" if project.subdomain else None
     }
 
 @app.put("/api/projects/{project_id}/hosting")
@@ -1052,7 +1240,7 @@ async def update_project_hosting(
     return {
         "message": "Настройки хостинга обновлены",
         "project": project,
-        "site_url": f"http://{project.subdomain}.siteofsites.local" if project.subdomain else None
+        "site_url": f"{SITE_PROTOCOL}://{project.subdomain}.{DOMAIN}" if project.subdomain else None
     }
 
 @app.get("/api/projects/{project_id}/hosting/files")
@@ -1077,8 +1265,15 @@ async def get_site_files(
     return {"files": site_files}
 
 @app.get("/api/sites/{subdomain}")
-async def get_site_by_subdomain(subdomain: str, db: Session = Depends(get_db)):
+async def get_site_by_subdomain(
+    subdomain: str, 
+    request: Request,
+    response: Response, 
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user)
+):
     """Получение информации о сайте по поддомену (публичный доступ)"""
+    response.headers["Cache-Control"] = "no-cache"
     project = db.query(Project).filter(
         Project.subdomain == subdomain,
         Project.is_active == True
@@ -1090,6 +1285,17 @@ async def get_site_by_subdomain(subdomain: str, db: Session = Depends(get_db)):
             detail="Сайт не найден или неактивен"
         )
     
+    # Проверка прав доступа для приватных сайтов
+    if project.visibility == "PRIVATE":
+        if not current_user or current_user.id != project.owner_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Доступ к этому сайту ограничен"
+            )
+    
+    # Записываем визит (так как это запрос информации о сайте, считаем за просмотр)
+    record_project_visit(project, request, db)
+
     # Получаем файлы сайта
     site_files = get_site_files_from_minio(project.owner.unique_id, project.id)
     
@@ -1113,7 +1319,9 @@ async def get_site_by_subdomain(subdomain: str, db: Session = Depends(get_db)):
 async def serve_site_file_by_subdomain(
     subdomain: str, 
     filename: str, 
-    db: Session = Depends(get_db)
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user)
 ):
     """Отдача файлов сайта по поддомену"""
     project = db.query(Project).filter(
@@ -1127,16 +1335,31 @@ async def serve_site_file_by_subdomain(
             detail="Сайт не найден или неактивен"
         )
     
+    # Проверка прав доступа для приватных сайтов
+    if project.visibility == "PRIVATE":
+        if not current_user or current_user.id != project.owner_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Доступ к этому сайту ограничен"
+            )
+    
     # Если файл не указан, используем index_file
     if not filename or filename == "":
         filename = project.index_file
+    
+    # Записываем визит только если запрашивается HTML файл (страница)
+    # Чтобы не накручивать счетчик на каждый CSS/JS/IMG
+    if filename.lower().endswith(('.html', '.htm')):
+        record_project_visit(project, request, db)
     
     return serve_site_file(project.owner.unique_id, project.id, filename)
 
 @app.get("/api/sites/{subdomain}/")
 async def serve_site_index_by_subdomain(
     subdomain: str, 
-    db: Session = Depends(get_db)
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user)
 ):
     """Отдача главной страницы сайта по поддомену"""
     project = db.query(Project).filter(
@@ -1150,6 +1373,17 @@ async def serve_site_index_by_subdomain(
             detail="Сайт не найден или неактивен"
         )
     
+    # Проверка прав доступа для приватных сайтов
+    if project.visibility == "PRIVATE":
+        if not current_user or current_user.id != project.owner_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Доступ к этому сайту ограничен"
+            )
+    
+    # Записываем визит (главная страница)
+    record_project_visit(project, request, db)
+    
     return serve_site_file(project.owner.unique_id, project.id, project.index_file)
 
 @app.get("/api/hosting/check-subdomain/{subdomain}")
@@ -1161,10 +1395,170 @@ async def check_subdomain_availability(subdomain: str, db: Session = Depends(get
         "message": message
     }
 
+# Статистика
+@app.get("/api/projects/{project_id}/stats", response_model=ProjectStats)
+async def get_project_stats(
+    project_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Получение статистики по проекту (только для владельца)"""
+    project = db.query(Project).filter(
+        Project.id == project_id,
+        Project.owner_id == current_user.id
+    ).first()
+    
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Проект не найден"
+        )
+    
+    now = datetime.utcnow()
+    day_ago = now - timedelta(days=1)
+    week_ago = now - timedelta(weeks=1)
+    month_ago = now - timedelta(days=30)
+    
+    # Базовый запрос
+    query = db.query(ProjectVisit).filter(ProjectVisit.project_id == project_id)
+    
+    # Агрегация по времени
+    total_visits = query.count()
+    visits_today = query.filter(ProjectVisit.timestamp >= day_ago).count()
+    visits_week = query.filter(ProjectVisit.timestamp >= week_ago).count()
+    visits_month = query.filter(ProjectVisit.timestamp >= month_ago).count()
+    
+    # Агрегация по странам
+    countries_data = {}
+    countries_query = db.query(
+        ProjectVisit.country_code, func.count(ProjectVisit.id)
+    ).filter(
+        ProjectVisit.project_id == project_id
+    ).group_by(ProjectVisit.country_code).all()
+    
+    for country, count in countries_query:
+        countries_data[country] = count
+        
+    # Агрегация по источникам
+    sources_data = {}
+    sources_query = db.query(
+        ProjectVisit.source_type, func.count(ProjectVisit.id)
+    ).filter(
+        ProjectVisit.project_id == project_id
+    ).group_by(ProjectVisit.source_type).all()
+    
+    for source, count in sources_query:
+        sources_data[source] = count
+        
+    return {
+        "total_visits": total_visits,
+        "visits_today": visits_today,
+        "visits_week": visits_week,
+        "visits_month": visits_month,
+        "countries": countries_data,
+        "sources": sources_data
+    }
+
+@app.get("/api/user/stats", response_model=List[ProjectStatsSummary])
+async def get_user_projects_stats(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Получение сводной статистики по всем проектам пользователя"""
+    projects = db.query(Project).filter(Project.owner_id == current_user.id).all()
+    
+    stats_summary = []
+    now = datetime.utcnow()
+    day_ago = now - timedelta(days=1)
+    
+    for project in projects:
+        total_visits = db.query(ProjectVisit).filter(ProjectVisit.project_id == project.id).count()
+        visits_today = db.query(ProjectVisit).filter(
+            ProjectVisit.project_id == project.id,
+            ProjectVisit.timestamp >= day_ago
+        ).count()
+        
+        stats_summary.append({
+            "project_id": project.id,
+            "project_title": project.title,
+            "total_visits": total_visits,
+            "visits_today": visits_today
+        })
+    
+    # Сортировка по посещениям (сначала популярные)
+    stats_summary.sort(key=lambda x: x["total_visits"], reverse=True)
+    
+    return stats_summary
+
+# --- ЧАТ БОТ ---
+
+@app.get("/api/chat/history", response_model=List[ChatMessageResponse])
+async def get_chat_history(
+    session_id: Optional[str] = None,
+    current_user: Optional[User] = Depends(get_optional_current_user),
+    db: Session = Depends(get_db)
+):
+    """Получение истории чата"""
+    query = db.query(ChatHistory)
+    
+    if current_user:
+        query = query.filter(ChatHistory.user_id == current_user.id)
+    elif session_id:
+        query = query.filter(ChatHistory.session_id == session_id)
+    else:
+        return []
+        
+    return query.order_by(ChatHistory.timestamp).all()
+
+@app.post("/api/chat/send", response_model=ChatMessageResponse)
+async def send_chat_message(
+    msg_data: ChatMessageCreate,
+    current_user: Optional[User] = Depends(get_optional_current_user),
+    db: Session = Depends(get_db)
+):
+    """Отправка сообщения боту и сохранение истории"""
+    
+    # 1. Сохраняем сообщение пользователя
+    user_msg = ChatHistory(
+        user_id=current_user.id if current_user else None,
+        session_id=msg_data.session_id,
+        sender="user",
+        message=msg_data.message
+    )
+    db.add(user_msg)
+    db.commit()
+    
+    # 2. Отправляем запрос в AI сервис
+    bot_reply_text = "Извините, сервис временно недоступен."
+    try:
+        async with httpx.AsyncClient() as client:
+            # В Docker используем имя сервиса, локально localhost
+            response = await client.post(
+                f"{AI_SERVICE_URL}/api/ai/chat",
+                json={"message": msg_data.message, "user_id": str(current_user.id) if current_user else msg_data.session_id},
+                timeout=30.0
+            )
+            if response.status_code == 200:
+                data = response.json()
+                bot_reply_text = data.get("reply", "")
+            else:
+                logging.error(f"AI Service Error: {response.status_code} {response.text}")
+    except Exception as e:
+        logging.error(f"AI Connection Error: {e}")
+    
+    # 3. Сохраняем ответ бота
+    bot_msg = ChatHistory(
+        user_id=current_user.id if current_user else None,
+        session_id=msg_data.session_id,
+        sender="bot",
+        message=bot_reply_text
+    )
+    db.add(bot_msg)
+    db.commit()
+    db.refresh(bot_msg)
+    
+    return bot_msg
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
-
-

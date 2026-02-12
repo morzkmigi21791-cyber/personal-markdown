@@ -16,16 +16,30 @@ import './App.css';
 // Настройка axios для работы с куки
 axios.defaults.withCredentials = true;
 
+// Глобальный перехватчик ошибок для подавления "Script error." и "ResizeObserver loop limit exceeded"
+// Это часто случается на мобильных устройствах в режиме разработки и обычно безопасно для игнорирования
+const ignoreErrors = ['ResizeObserver loop limit exceeded', 'Script error.'];
+const originalOnError = window.onerror;
+
+window.onerror = (msg, url, line, col, error) => {
+  if (ignoreErrors.some(err => msg && msg.toString().includes(err))) {
+    return true; // Подавляем ошибку (не показываем оверлей)
+  }
+  if (originalOnError) return originalOnError(msg, url, line, col, error);
+};
+
 function AppContent() {
   const [user, setUser] = useState(null);
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [showRegisterModal, setShowRegisterModal] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [siteConfig, setSiteConfig] = useState({ domain: 'localhost', protocol: 'http' });
   const navigate = useNavigate();
 
   // Проверяем аутентификацию при загрузке приложения
   useEffect(() => {
     checkAuth();
+    fetchConfig();
   }, []);
 
   const checkAuth = async () => {
@@ -48,6 +62,15 @@ function AppContent() {
       localStorage.removeItem('access_token');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchConfig = async () => {
+    try {
+      const response = await api.get('/api/config');
+      setSiteConfig(response.data);
+    } catch (error) {
+      console.error('Не удалось загрузить конфигурацию сайта', error);
     }
   };
 
@@ -99,7 +122,7 @@ function AppContent() {
 
   const handleLogout = async () => {
     try {
-      await axios.post('/api/auth/logout');
+      await api.post('/api/auth/logout');
     } catch (error) {
       // Игнорируем ошибки при выходе
     } finally {
@@ -149,8 +172,8 @@ function AppContent() {
       
       <main className="main-content">
         <Routes>
-          <Route path="/" element={<Welcome />} />
-          <Route path="/profile/:uniqueId" element={<UserProfilePage user={user} />} />
+          <Route path="/" element={<Welcome siteConfig={siteConfig} />} />
+          <Route path="/profile/:uniqueId" element={<UserProfilePage user={user} siteConfig={siteConfig} />} />
           <Route path="/settings" element={<ProfileSettingsPage user={user} onUpdate={handleProfileUpdate} />} />
         </Routes>
       </main>
@@ -189,4 +212,3 @@ function App() {
 }
 
 export default App;
-

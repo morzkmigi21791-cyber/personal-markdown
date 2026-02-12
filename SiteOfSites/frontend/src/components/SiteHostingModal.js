@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import api from '../api';
 import './SiteHostingModal.css';
 
 const SiteHostingModal = ({ project, isOpen, onClose, onUpdate }) => {
@@ -12,14 +13,26 @@ const SiteHostingModal = ({ project, isOpen, onClose, onUpdate }) => {
   const [siteFiles, setSiteFiles] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [successMessage, setSuccessMessage] = useState('');
   const [subdomainCheck, setSubdomainCheck] = useState(null);
   const [checkingSubdomain, setCheckingSubdomain] = useState(false);
+  const [siteConfig, setSiteConfig] = useState({ domain: 'localhost', protocol: 'http' });
 
   useEffect(() => {
     if (isOpen && project) {
       fetchHostingInfo();
+      fetchConfig();
     }
   }, [isOpen, project]);
+
+  const fetchConfig = async () => {
+    try {
+      const response = await api.get('/api/config');
+      setSiteConfig(response.data);
+    } catch (error) {
+      console.error('Не удалось загрузить конфигурацию сайта', error);
+    }
+  };
 
   const fetchHostingInfo = async () => {
     try {
@@ -83,8 +96,18 @@ const SiteHostingModal = ({ project, isOpen, onClose, onUpdate }) => {
 
   const handleSave = async () => {
     try {
+      // Проверка наличия главного файла перед активацией
+      if (hostingConfig.is_active) {
+        const indexFileExists = siteFiles.some(f => f.filename === hostingConfig.index_file);
+        if (!indexFileExists) {
+          setError(`Ошибка: Главный файл "${hostingConfig.index_file}" не найден. Загрузите его перед активацией.`);
+          return;
+        }
+      }
+
       setLoading(true);
       setError('');
+      setSuccessMessage('');
       
       const token = localStorage.getItem('access_token');
       const response = await axios.put(`/api/projects/${project.id}/hosting`, hostingConfig, {
@@ -97,7 +120,8 @@ const SiteHostingModal = ({ project, isOpen, onClose, onUpdate }) => {
         onUpdate();
       }
       
-      onClose();
+      setSuccessMessage('Настройки успешно сохранены');
+      setTimeout(() => setSuccessMessage(''), 3000);
     } catch (error) {
       console.error('Error saving hosting config:', error);
       setError(error.response?.data?.detail || 'Ошибка сохранения настроек');
@@ -128,6 +152,7 @@ const SiteHostingModal = ({ project, isOpen, onClose, onUpdate }) => {
           {loading && <div className="loading">Загрузка...</div>}
           
           {error && <div className="error-message">{error}</div>}
+          {successMessage && <div className="success-message" style={{backgroundColor: '#d4edda', color: '#155724', padding: '12px', borderRadius: '6px', marginBottom: '20px', border: '1px solid #c3e6cb'}}>{successMessage}</div>}
           
           <div className="hosting-form">
             <div className="form-group">
@@ -142,7 +167,7 @@ const SiteHostingModal = ({ project, isOpen, onClose, onUpdate }) => {
                   placeholder="mysite"
                   className={subdomainCheck && !subdomainCheck.available ? 'error' : ''}
                 />
-                <span className="subdomain-suffix">.localhost</span>
+                {/* <span className="subdomain-suffix">.localhost</span> - убрали суффикс, так как теперь это часть пути */}
               </div>
               {checkingSubdomain && <div className="checking">Проверка...</div>}
               {subdomainCheck && (
@@ -190,7 +215,7 @@ const SiteHostingModal = ({ project, isOpen, onClose, onUpdate }) => {
                 Активировать сайт
               </label>
               <p className="help-text">
-                Сайт будет доступен по адресу: {hostingConfig.subdomain ? `http://${hostingConfig.subdomain}.localhost` : 'укажите поддомен'}
+                Сайт будет доступен по адресу: {hostingConfig.subdomain ? `${siteConfig.protocol}://${siteConfig.domain}/sites/${hostingConfig.subdomain}` : 'укажите поддомен'}
               </p>
             </div>
 
@@ -213,9 +238,9 @@ const SiteHostingModal = ({ project, isOpen, onClose, onUpdate }) => {
                 <h3>Просмотр сайта</h3>
                 <p>Ваш сайт доступен по адресу:</p>
                 <div className="site-url">
-                  <code>http://{hostingConfig.subdomain}.localhost</code>
+                  <code>{siteConfig.protocol}://{siteConfig.domain}/sites/{hostingConfig.subdomain}/</code>
                   <a 
-                    href={`http://${hostingConfig.subdomain}.localhost`}
+                    href={`${siteConfig.protocol}://${siteConfig.domain}/sites/${hostingConfig.subdomain}/`}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="preview-site-btn"

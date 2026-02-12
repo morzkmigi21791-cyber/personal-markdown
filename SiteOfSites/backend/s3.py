@@ -19,6 +19,7 @@ def create_minio_client():
         )
         return client
     except Exception as e:
+        logging.error(f"Ошибка создания клиента MinIO: {e}")
         raise
 
 def ensure_bucket_exists(client, bucket_name):
@@ -27,8 +28,10 @@ def ensure_bucket_exists(client, bucket_name):
         if not client.bucket_exists(bucket_name):
             client.make_bucket(bucket_name)
     except S3Error as e:
+        logging.error(f"Ошибка MinIO S3: {e}")
         raise
     except Exception as e:
+        logging.error(f"Ошибка проверки bucket: {e}")
         raise
 
 # Инициализация MinIO клиента
@@ -36,6 +39,7 @@ try:
     minio_client = create_minio_client()
     ensure_bucket_exists(minio_client, MINIO_BUCKET_NAME)
 except Exception as e:
+    logging.critical(f"Не удалось инициализировать MinIO: {e}")
     minio_client = None
 
 BUCKET_NAME = MINIO_BUCKET_NAME
